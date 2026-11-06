@@ -9,9 +9,11 @@ license requires.
 Source project: [opencode-dotnet/opencode-sdk-dotnet](https://github.com/opencode-dotnet/opencode-sdk-dotnet)
 
 Derived content in this repository: the engineering conventions, adapted to this product. That
-covers the agent entry point (`AGENTS.md`), the engineering canon under `docs/engineering/`, and the
-ADR policy in `docs/adr/README.md`. No source code of that project is vendored here. Its notice
-follows.
+covers the agent entry point (`AGENTS.md`), the engineering canon under `docs/engineering/`, the
+ADR policy in `docs/adr/README.md`, and the build and analyzer configuration (`.editorconfig`,
+`BannedSymbols.txt`, `Directory.Build.props`, `Directory.Packages.props`). The public API baseline
+tests and their harness under `tests/OpenCode.Agents.AI.Tests/` are adapted from that project's
+tests; no product source code of that project is vendored here. Its notice follows.
 
 ```
 MIT License

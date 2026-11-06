@@ -37,6 +37,38 @@ validated compilation-wide arbitration (`../engineering/quality-gates.md`).
 `global.json` selects the .NET SDK. A move to another feature band, or to a newer .NET major, is
 an explicit change, not drift.
 
+## Target frameworks
+
+The package matrix follows Microsoft's support lifecycle: every modern .NET version Microsoft
+supports, plus `net472` and `netstandard2.0`. It is:
+
+```text
+netstandard2.0;net472;net10.0;net11.0
+```
+
+A version joins at its first go-live release candidate and leaves no later than its end of
+support; a non-preview package is built only on a GA SDK. `global.json` pins the .NET 11 release
+candidate SDK until its GA. `Directory.Build.props` holds every target-framework literal:
+`DefaultTargetFramework` (the LTS release), `LatestTargetFramework`, `AllTargetFrameworks` for the
+package, and `TestTargetFrameworks` for the test project, which adds `net472` on Windows.
+
+`net472` owns .NET Framework-specific compile and runtime behavior. `netstandard2.0` is the broad
+compatibility bridge and has no runtime of its own; net472 legs proxy its downlevel behavior. It is
+a compatibility asset, not a supported runtime: a consumer on another runtime can install it, but
+support and testing cover the targeted runtimes only.
+
+Every asset of a package exposes the same public API, held to that package's one reviewed baseline:
+a test reads each shipped asset from the build output and compares it. The reviewed differences are
+the trimming and native AOT annotations (`RequiresUnreferencedCode`, `RequiresDynamicCode`) and the
+`Experimental` marks, which are public attributes on .NET only; the `netstandard2.0` and `net472`
+assets carry internal copies, so their members render without them. Any other difference fails the
+test.
+
+Modern C# on downlevel targets is deliberate and supported inside this repository by the private,
+source-only Polyfill package. Exact package versions belong to `Directory.Packages.props`, not this
+document. A polyfilled member whose downlevel behaviour is a hazard is banned in
+`BannedSymbols.txt`, which names its replacement when one exists.
+
 ## Dependencies
 
 - `Directory.Packages.props` is the one central package-management owner, with literal pinned
@@ -69,8 +101,6 @@ identities. This package versions on its own. A preview version authorizes no pu
   `Directory.Packages.props`. Documentation records policy, not a second version inventory.
 - A future package is added only for a real distribution boundary; repository layout alone does
   not justify another artifact.
-- The README in the package is pinned to the packed commit so its repository links open the
-  documentation that shipped with it.
 - The public surface is held to one reviewed public API baseline (`../engineering/testing-style.md`).
   Package validation and its published-release baseline follow `../engineering/quality-gates.md`.
 

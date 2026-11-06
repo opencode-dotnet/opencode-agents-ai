@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>$(AllTargetFrameworks)</TargetFrameworks>
+    <!-- The package id is deliberately not the assembly name: nuget.org reserves the OpenCode.
+         prefix for another owner, so the shipped assembly and every public namespace stay
+         OpenCode.Agents.AI while the artifact is published under the package id prefix. -->
+    <PackageId>OpenCodeDotNet.Agents.AI</PackageId>
+    <Description>Unofficial Microsoft Agent Framework provider for OpenCode: an AIAgent over OpenCode sessions, built on the OpenCode .NET SDK. The package id is $(PackageId); the assembly and every namespace are OpenCode.Agents.AI.</Description>
+    <PackageTags>opencode;microsoft-agent-framework;maf;agents;ai;dotnet;csharp</PackageTags>
+    <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsAotCompatible>
+  </PropertyGroup>
+
+</Project>

@@ -32,6 +32,7 @@ These look like slop to a generic pass and are not:
 - A one-implementation internal interface that tests substitute. It is a seam (`coding-style.md`
   §2), though R2 below still applies when it duplicates a BCL abstraction.
 - A suppression that follows the suppression policy below.
+- An `#if` that an analyzer rule forces on one target framework.
 
 ## Catalog
 
@@ -101,7 +102,7 @@ catches. Each item is pass, fail or not applicable, and a fail names its reason.
 
 - **R1. It earns its place.** Deleting or simplifying the construct would lose behaviour or
   information. A wrapper exists because it adds policy, such as error mapping that callers rely on.
-- **R2. One abstraction per concern.** Look in the BCL, the referenced libraries (MAF,
+- **R2. One abstraction per concern.** Look in the BCL, Polyfill, the referenced libraries (MAF,
   the OpenCode .NET SDK) and the existing seams first. A substituted seam that duplicates
   `TimeProvider`, for example, fails this item even though it passes R3.
 - **R3. Every interface names its reason:** a seam that tests substitute, a public extension
@@ -124,6 +125,8 @@ catches. Each item is pass, fail or not applicable, and a fail names its reason.
 - **R13. Background work has an owner and a fault path.** A task that is started and not awaited
   is either stored and observed by its owner, or its comment states what owns it and where its
   faults go, and the code backs that claim.
+- **R14. A multi-target fork earns its place.** Each `#if` names the API gap that Polyfill and the
+  platform helpers do not cover, or the analyzer rule that forces it.
 - **R15. Every process, handle and disposable has a named owner.** No disposable is captured by a
   discarded task.
 

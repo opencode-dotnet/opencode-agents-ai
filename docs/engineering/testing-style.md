@@ -118,7 +118,8 @@ the observed fixture count rather than projecting completeness onto it.
   surface with its reviewed snapshot. A snapshot format change is reviewed as a complete diff;
   snapshot auto-accept fails the review rubric (`slop-review.md`).
 - TUnit runs tests in parallel by default. Parallel keys and `[NotInParallel]` order tests inside
-  one test application only. A test class that starts real processes carries
+  one test application only, while the hosts of one run — one per target framework — run at the
+  same time. A test class that starts real processes carries
   `[NotInParallel("processes")]`; every process test uses dynamic loopback ports and its own owned
   roots. When contention appears, run the applications one after another rather than widening a
   key. A test whose load a runner cannot carry beside other timed tests carries a category the
@@ -218,7 +219,8 @@ proof counts only when:
    rule ID, not as a kill. A mutant rejected only for its spelling is re-spelled in an analyzer-clean
    form;
 3. every binary the test exercises was rebuilt, including the packages a package test inspects;
-4. a test run that prints no total, or a total of 0, is not a result.
+4. it fails on every target framework the rule ships on;
+5. a test run that prints no total, or a total of 0, is not a result.
 
 This product's critical rules: none exists yet.
 

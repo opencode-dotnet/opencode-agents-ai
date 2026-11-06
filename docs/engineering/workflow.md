@@ -51,7 +51,8 @@ alone, and the pull request passes the full gate:
 
 1. **.NET SDK band and servicing** - the newest servicing patch of the selected feature band in
    `global.json`, with `Microsoft.CodeAnalysis.NetAnalyzers` and `Microsoft.SourceLink.GitHub`,
-   which follow that patch. A move to another feature band is an explicit change under
+   which follow that patch, and Polyfill. Polyfill's new members are audited against
+   `BannedSymbols.txt`. A move to another feature band is an explicit change under
    `../architecture/platform-and-packaging.md`, not a refresh.
 2. **Product dependencies** - MAF and the OpenCode .NET SDK, once they are taken. The CHANGELOG
    names every raised product dependency and the security fixes it carries.

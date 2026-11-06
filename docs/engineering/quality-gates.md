@@ -49,6 +49,8 @@ policy in `slop-review.md`, so a new one needs the maintainer's approval.
   an entry is never borrowed from another repository.
 - `LangVersion=14.0` and `AnalysisLevel=10.0` are deliberate numeric pins. Never replace either
   with `latest`. Future language changes move the numeric pin intentionally.
+- C# 14 on net472 is unsupported by the platform documentation but deliberate repository practice,
+  enabled by source polyfills.
 - `GenerateDocumentationFile=true` is load-bearing because CLI builds do not report IDE0005
   consistently without it. Keep the adjacent guard comment in `Directory.Build.props`.
 - Analyzer package currency is manual. Since SDK 9, the build does not warn reliably when the
@@ -126,9 +128,11 @@ makes the repository's local tools, Slopwatch among them, available.
 
 The build is the semantic analyzer wall: compiler diagnostics, build-enforceable IDE rules, SDK CA
 rules, third-party analyzers, and source-generator diagnostics run there for every compilation. The
-local check builds with the wall on. CI runs it once, in the lint job's Linux build; the three OS
-legs build with `RunAnalyzers=false`. Every OS compiles the same LF-normalized sources, so repeated
-analysis per OS would find nothing new and only cost build time.
+local check builds with the wall on. CI runs it once, in the lint job's Linux build, which sets
+`IncludeNet472Tests` so the Windows-only net472 test targets are analyzed too; the three OS legs
+build with `RunAnalyzers=false`. Every OS compiles the same LF-normalized sources for the same
+targets, apart from those net472 test targets, which are the only OS-conditioned setting that
+reaches a compilation, so a second analysis per OS would find nothing new and only cost build time.
 The whitespace pass separately retains UTF-8, LF, final-newline, trailing-whitespace, and
 syntax-whitespace enforcement. The warning-level style pass retains deterministic import
 organization and every configured Roslyn style error, including rules classified
