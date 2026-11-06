@@ -11,20 +11,22 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 
 **Pre-release bootstrap. Nothing is installable yet, and no package is published.**
 
-The canon and build backbone exist: the empty library, public API baseline on every shipped asset,
-analyzer wall, format gates, Slopwatch and package validation. No provider behavior exists yet;
-CI is next.
+The canon, build backbone and CI workflows exist: the empty library, public API baseline on every
+shipped asset, analyzer wall, format gates, Slopwatch, package validation, three-OS CI with its
+`CI result` check, dependency review and contribution files. No provider behavior exists yet;
+the first green hosted run, merge queue and branch protection are next.
 
-Until CI and the merge queue exist, feature branches merge with the maintainer's approval.
+Until the merge queue exists, a pull request merges on the maintainer's approval.
 
 ## Bootstrap, in order
 
 1. **Canon** - done.
 2. **Target frameworks** - done (decided from the published assets of the dependencies).
-3. **Build backbone** - done (this change): the library project and the test project with the public API baseline,
+3. **Build backbone** - done: the library project and the test project with the public API baseline,
    the analyzer wall, the format gates, Slopwatch and package validation.
-4. **CI** - the CI workflow with its `CI result` check and dependency review, the contribution
-   files, then the merge queue and branch protection on `master` (`engineering/workflow.md`).
+4. **CI** - the CI workflow with its `CI result` check, dependency review and contribution files
+   are in this change. The merge queue and branch protection on `master` follow after the first
+   green hosted run (`engineering/workflow.md`).
 5. **Spike** - `OpenCodeAgent` non-streaming, then streaming; a workflow with a deterministic .NET
    executor between two OpenCode agents; checkpoint and reconnect.
 6. **Own use** - one real loop run with the product: implement, gate, review, fix-up.
@@ -43,7 +45,7 @@ Until CI and the merge queue exist, feature branches merge with the maintainer's
 
 - **No provider behavior yet.** The library's public surface is empty; the build backbone and local
   check in `engineering/quality-gates.md` are in place.
-- **No CI yet.** The CI contract in `engineering/quality-gates.md` is decided but not in place;
-  no change can be called complete by a green `CI result`.
+- **No merge queue yet.** Until it exists, a pull request merges on the maintainer's approval;
+  the merge queue and branch protection follow after the first green hosted run.
 - **No clone gate yet.** It is deferred to the spike, no later than its first pull request that
   adds hand-written production or test code.

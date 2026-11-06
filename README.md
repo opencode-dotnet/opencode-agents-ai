@@ -28,6 +28,11 @@ exact commands.
 Contributors and coding agents start at [`AGENTS.md`](AGENTS.md), which routes each kind of work to
 its canon; [`CONTEXT.md`](CONTEXT.md) defines the terms this repository uses.
 
+See [Contributing](.github/CONTRIBUTING.md) for issues, review and pull requests. CI checks Release
+builds and the test module on Windows, Linux and macOS, with net472 on Windows; these checks do
+not prove package publication. [Quality gates](docs/engineering/quality-gates.md#continuous-integration)
+own the CI contract, and the [roadmap](docs/ROADMAP.md) records hosted verification and protection status.
+
 ## License
 
 Licensed under MIT, see [LICENSE](LICENSE) for the full text. Content derived from the OpenCode .NET
