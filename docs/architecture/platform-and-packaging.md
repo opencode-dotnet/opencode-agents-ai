@@ -51,10 +51,10 @@ netstandard2.0;net472;net10.0;net11.0
 ```
 
 A version joins at its first go-live release candidate and leaves no later than its end of
-support; a non-preview package is built only on a GA SDK. `global.json` pins the .NET 11 release
-candidate SDK until its GA. `Directory.Build.props` holds every target-framework literal:
-`DefaultTargetFramework` (the LTS release), `LatestTargetFramework`, `AllTargetFrameworks` for the
-package, and `TestTargetFrameworks` for the test project, which adds `net472` on Windows.
+support; a non-preview package is built only on a GA SDK. `global.json` pins the GA .NET 11 SDK.
+`Directory.Build.props` holds every target-framework literal: `DefaultTargetFramework` (the LTS
+release), `LatestTargetFramework`, `AllTargetFrameworks` for the package, and
+`TestTargetFrameworks` for the test project, which adds `net472` on Windows.
 
 `net472` owns .NET Framework-specific compile and runtime behavior. `netstandard2.0` is the broad
 compatibility bridge and has no runtime of its own; net472 legs proxy its downlevel behavior. It is
