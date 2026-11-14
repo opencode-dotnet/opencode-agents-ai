@@ -21,4 +21,5 @@ A workflow does not see a pending permission request as an external request, and
 checkpoint while one waits: the turn blocks until the callback returns. A pending request is not
 part of any checkpoint; a resumed turn asks again.
 
-Evidence: MAF `dotnet-1.27.0`, `Microsoft.Agents.AI.GitHub.Copilot` and its sample's README.
+Evidence: MAF `dotnet-1.27.0`, `GitHubCopilotAgent` in `Microsoft.Agents.AI.GitHub.Copilot`, and
+the README of its sample `dotnet/samples/02-agents/AgentProviders/github-copilot/Agent_With_GitHubCopilot`.

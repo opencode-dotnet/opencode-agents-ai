@@ -29,21 +29,25 @@ owns; the layer above MAF belongs to a separate, later repository.
 
 ## A run
 
-One run sends one prompt and ends on exactly one turn-end event: `session.execution.succeeded`,
-`session.execution.failed` or `session.execution.interrupted`. A failed turn and a `Shutdown`
-interruption throw; any other interruption ends the run normally. A prompt to a busy OpenCode
-session is queued behind its current turn, never steered into it.
+One run sends one prompt and ends on exactly one turn-end event of that prompt's turn:
+`session.execution.succeeded`, `session.execution.failed` or `session.execution.interrupted`. A
+failed turn and a `Shutdown` interruption throw; any other interruption ends the run normally. A
+prompt to a busy OpenCode session is queued behind its current turn, never steered into it.
 
 ## Permission requests
 
-The caller's callback answers a permission request; with no callback the agent rejects it. The
-agent answers only requests of its own OpenCode session and of that session's children, because
-one OpenCode server carries the requests of every client
-([ADR-0002](../adr/0002-permission-requests-go-to-a-caller-callback.md)).
+The caller's callback answers a permission request; with no callback the agent rejects it, so
+nothing is approved and nothing throws
+([ADR-0002](../adr/0002-permission-requests-go-to-a-caller-callback.md)). The agent answers only
+requests of its own OpenCode session and of that session's children, because one OpenCode server
+carries the requests of every client.
 
 ## Cancellation
 
-A cancelled run interrupts the turn on the server. This is the one step beyond the template.
+A cancelled run interrupts the turn on the server. This is the one step beyond
+`GitHubCopilotAgent`, which only passes the token to its calls: without the interrupt, a cancelled
+run would leave the turn running on the server. The step is dropped if OpenCode starts ending a
+turn when its client goes away.
 
 ## Not supported
 
