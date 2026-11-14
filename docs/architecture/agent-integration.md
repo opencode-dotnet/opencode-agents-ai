@@ -1,6 +1,6 @@
 # Agent Integration Architecture
 
-Date: 2026-11-06
+Date: 2026-11-14
 
 Canonical current rules for the agent contract, session ownership, the harness and orchestration
 boundary, dependencies, and upstream parity. Projects and packaging live in
@@ -26,6 +26,33 @@ OpenCode stays the harness: its tool loop, context, compaction, permissions and 
 not reproduced here. MAF stays the orchestration runtime: its workflows, checkpoints, fan-out and
 human-in-the-loop are not reimplemented here. Each runtime keeps the responsibilities it already
 owns; the layer above MAF belongs to a separate, later repository.
+
+## A run
+
+One run sends one prompt and ends on exactly one turn-end event of that prompt's turn:
+`session.execution.succeeded`, `session.execution.failed` or `session.execution.interrupted`. A
+failed turn and a `Shutdown` interruption throw; any other interruption ends the run normally. A
+prompt to a busy OpenCode session is queued behind its current turn, never steered into it.
+
+## Permission requests
+
+The caller's callback answers a permission request; with no callback the agent rejects it, so
+nothing is approved and nothing throws
+([ADR-0002](../adr/0002-permission-requests-go-to-a-caller-callback.md)). The agent answers only
+requests of its own OpenCode session and of that session's children, because one OpenCode server
+carries the requests of every client.
+
+## Cancellation
+
+A cancelled run interrupts the turn on the server. This is the one step beyond
+`GitHubCopilotAgent`, which only passes the token to its calls: without the interrupt, a cancelled
+run would leave the turn running on the server. The step is dropped if OpenCode starts ending a
+turn when its client goes away.
+
+## Not supported
+
+`AgentRunOptions` is ignored, `ResponseFormat` included. OpenCode forms and questions are not MAF
+content.
 
 ## Thin boundary
 

@@ -1,7 +1,5 @@
 # OpenCode Agents AI
 
-Date: 2026-11-06
-
 Shared vocabulary for the OpenCode MAF provider. These terms distinguish its MAF boundary, the
 upstream OpenCode domain and the .NET toolchain.
 
@@ -48,6 +46,14 @@ _Avoid_: run (when ambiguous), workflow run (when referring to one agent call)
 **Workflow run**:
 An MAF workflow execution.
 _Avoid_: run (when ambiguous), agent run (when referring to a workflow execution)
+
+**Turn**:
+The work that one prompt starts in an OpenCode session; it ends when it succeeds, fails or is interrupted.
+_Avoid_: execution, run (when referring to the OpenCode side)
+
+**Permission request**:
+A question that OpenCode raises during a turn about whether an action may proceed; the caller answers it.
+_Avoid_: approval, tool approval (MAF's approval content, which this product does not use)
 
 **Response update**:
 An MAF `AgentResponseUpdate`.

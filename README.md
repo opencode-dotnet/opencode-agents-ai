@@ -15,7 +15,7 @@ thin library adapter over the published OpenCode .NET SDK, intended for the NuGe
 **Pre-release bootstrap. Nothing is installable yet, and no package is published.**
 
 [`docs/ROADMAP.md`](docs/ROADMAP.md) has the current state and what comes next. Usage arrives with
-the spike.
+the first version.
 
 ## Developing
 
@@ -26,7 +26,7 @@ Before a pull request opens, run the local check that
 exact commands.
 
 Contributors and coding agents start at [`AGENTS.md`](AGENTS.md), which routes each kind of work to
-its canon; [`CONTEXT.md`](CONTEXT.md) defines the terms this repository uses.
+its canon; [`GLOSSARY.md`](GLOSSARY.md) defines the terms this repository uses.
 
 See [Contributing](.github/CONTRIBUTING.md) for issues, review and pull requests. CI checks Release
 builds and the test module on Windows, Linux and macOS, with net472 on Windows; these checks do
