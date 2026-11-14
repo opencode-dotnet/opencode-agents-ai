@@ -745,3 +745,14 @@ dotnet_diagnostic.CA1716.severity = none
 # for every other file.
 [tools/opencode-tool.cs]
 dotnet_diagnostic.MA0048.severity = none
+
+# =============================================================================
+# OWNED READ JOIN (VSTHRD003)
+# =============================================================================
+# EventPump starts its own read of the OpenCode event bus and, at disposal,
+# cancels it and then awaits that same task, so the run never leaves a read
+# behind. The awaited task is the pump's own work, not a foreign one, and every
+# await in it declines context capture. Winner: the pump's disposal contract,
+# as in the SDK's TerminalReceivePump; VSTHRD003 stays error for every other file.
+[src/OpenCode.Agents.AI/Turns/EventPump.cs]
+dotnet_diagnostic.VSTHRD003.severity = none

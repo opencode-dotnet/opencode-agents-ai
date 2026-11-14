@@ -222,7 +222,10 @@ proof counts only when:
 4. it fails on every target framework the rule ships on;
 5. a test run that prints no total, or a total of 0, is not a result.
 
-This product's critical rules: none exists yet.
+This product's critical rules:
+
+- A session with an id is continued, not created again.
+- A run ends only on the three turn-end events.
 
 Mutation-tool scores are advisory. A tool that compiles mutants without the analyzer wall reports
 kills that the real build would reject, so its results are replayed through the full build before

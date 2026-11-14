@@ -9,6 +9,22 @@
     <Description>Unofficial Microsoft Agent Framework provider for OpenCode: an AIAgent over OpenCode sessions, built on the OpenCode .NET SDK. The package id is $(PackageId); the assembly and every namespace are OpenCode.Agents.AI.</Description>
     <PackageTags>opencode;microsoft-agent-framework;maf;agents;ai;dotnet;csharp</PackageTags>
     <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsAotCompatible>
+    <!-- Keep source-only polyfills hidden from friend test assemblies, which compile their own copy. -->
+    <PolyUseEmbeddedAttribute>true</PolyUseEmbeddedAttribute>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI.Abstractions" />
+    <PackageReference Include="OpenCodeDotNet.Sdk" />
+    <InternalsVisibleTo Include="OpenCode.Agents.AI.Tests" />
+  </ItemGroup>
+
+  <!-- JSON, async enumeration and channels are inbox on the modern targets. The downlevel
+       targets declare the bridges directly because the library uses their types directly. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0' Or '$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" />
+    <PackageReference Include="System.Text.Json" />
+    <PackageReference Include="System.Threading.Channels" />
+  </ItemGroup>
 
 </Project>

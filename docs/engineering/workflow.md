@@ -1,6 +1,6 @@
 # Repository Workflow
 
-Date: 2026-11-06
+Date: 2026-11-14
 
 Canonical working agreements for research, implementation, temporary work, verification, and Git
 history.
@@ -55,7 +55,7 @@ alone, and the pull request passes the full gate:
    `BannedSymbols.txt`. A move to another feature band is an explicit change under
    `../architecture/platform-and-packaging.md`, not a refresh.
 2. **Product dependencies** - MAF and the OpenCode .NET SDK, once they are taken. The CHANGELOG
-   names every raised product dependency and the security fixes it carries.
+   names every raised product dependency and the security fixes it carries. While this package is in preview, every new stable OpenCode .NET SDK release is taken. The downlevel bridge packages (`../architecture/platform-and-packaging.md`, Dependencies) move in the same commit as the SDK or MAF version that raises them.
 3. **Analyzers** - the analyzer packages and Slopwatch. Every new diagnostic or Slopwatch finding
    is decided per rule under the analyzer policy in `quality-gates.md`, never by a blanket
    suppression. The NetAnalyzers diagnostics that class 1 brings are decided the

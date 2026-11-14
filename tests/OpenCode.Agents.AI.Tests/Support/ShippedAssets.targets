@@ -11,6 +11,7 @@
   <Target Name="RecordShippedAssets" BeforeTargets="GetAssemblyAttributes">
     <ItemGroup>
       <_ShippedTargetFramework Include="$(AllTargetFrameworks)" />
+      <_ShippedProject Include="$(ShippedAssetProject)" />
     </ItemGroup>
     <MSBuild Projects="$(ShippedAssetProject)"
              Targets="GetTargetPath"
@@ -22,6 +23,7 @@
       <AssemblyMetadata Include="NuGetPackageRoot" Value="$(NuGetPackageRoot)" />
       <AssemblyMetadata Include="NetCoreTargetingPackRoot" Value="$(NetCoreTargetingPackRoot)" />
       <AssemblyMetadata Include="PublicApiBaseline" Value="$(MSBuildProjectDirectory)/Snapshots/PublicApi.verified.txt" />
+      <AssemblyMetadata Include="ShippedProjectAssets" Value="$([System.IO.Path]::GetDirectoryName('%(_ShippedProject.FullPath)'))/obj/project.assets.json" />
     </ItemGroup>
   </Target>
 

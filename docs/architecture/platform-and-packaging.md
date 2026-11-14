@@ -106,6 +106,7 @@ document. A polyfilled member whose downlevel behaviour is a hazard is banned in
   package is added for a capability no scheduled work consumes.
 - The provider consumes the OpenCode .NET SDK only as the published package `OpenCodeDotNet.Sdk`,
   never its source or internals; it is added with its first consumer.
+- On `netstandard2.0` and `net472` the library declares directly the packages its source uses that the modern targets carry inbox: `System.Text.Json`, `Microsoft.Bcl.AsyncInterfaces` and `System.Threading.Channels`. Each is pinned to the highest version that the OpenCode .NET SDK and MAF declare for those targets, never lower, so restore never downgrades a dependency of theirs.
 - MAF packages are added with their first consumer. The dependency direction and the MAF boundary
   are owned by `agent-integration.md`.
 - The clone detector is the repository's one npm dependency, pinned exactly in

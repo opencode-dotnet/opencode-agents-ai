@@ -10,16 +10,21 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="TUnit"/>
-    <PackageReference Include="Microsoft.Testing.Extensions.HangDump"/>
-    <PackageReference Include="PublicApiGenerator"/>
-    <PackageReference Include="System.Reflection.MetadataLoadContext"/>
-    <PackageReference Include="Testably.Abstractions"/>
-    <PackageReference Include="Verify.TUnit"/>
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="NSubstitute.Analyzers.CSharp">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
+    <PackageReference Include="PublicApiGenerator" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" />
+    <PackageReference Include="Testably.Abstractions" />
+    <PackageReference Include="Verify.TUnit" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/OpenCode.Agents.AI/OpenCode.Agents.AI.csproj"/>
+    <ProjectReference Include="../../src/OpenCode.Agents.AI/OpenCode.Agents.AI.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

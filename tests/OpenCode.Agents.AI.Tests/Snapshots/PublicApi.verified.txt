@@ -1,1 +1,34 @@
-﻿
+﻿namespace OpenCode.Agents.AI
+{
+    public sealed class OpenCodeAgent : Microsoft.Agents.AI.AIAgent, System.IAsyncDisposable
+    {
+        public OpenCodeAgent(OpenCode.Sdk.OpenCodeClient client, OpenCode.Agents.AI.OpenCodeAgentOptions? options = null, bool ownsClient = false, string? id = null, string? name = null, string? description = null) { }
+        public override string Description { get; }
+        protected override string? IdCore { get; }
+        public override string Name { get; }
+        public System.Threading.Tasks.ValueTask<Microsoft.Agents.AI.AgentSession> CreateSessionAsync(string sessionId) { }
+        protected override System.Threading.Tasks.ValueTask<Microsoft.Agents.AI.AgentSession> CreateSessionCoreAsync(System.Threading.CancellationToken cancellationToken = default) { }
+        protected override System.Threading.Tasks.ValueTask<Microsoft.Agents.AI.AgentSession> DeserializeSessionCoreAsync(System.Text.Json.JsonElement serializedState, System.Text.Json.JsonSerializerOptions? jsonSerializerOptions = null, System.Threading.CancellationToken cancellationToken = default) { }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public override object? GetService(System.Type serviceType, object? serviceKey = null) { }
+        protected override System.Threading.Tasks.Task<Microsoft.Agents.AI.AgentResponse> RunCoreAsync(System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, Microsoft.Agents.AI.AgentSession? session = null, Microsoft.Agents.AI.AgentRunOptions? options = null, System.Threading.CancellationToken cancellationToken = default) { }
+        protected override System.Collections.Generic.IAsyncEnumerable<Microsoft.Agents.AI.AgentResponseUpdate> RunCoreStreamingAsync(System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, Microsoft.Agents.AI.AgentSession? session = null, Microsoft.Agents.AI.AgentRunOptions? options = null, System.Threading.CancellationToken cancellationToken = default) { }
+        protected override System.Threading.Tasks.ValueTask<System.Text.Json.JsonElement> SerializeSessionCoreAsync(Microsoft.Agents.AI.AgentSession session, System.Text.Json.JsonSerializerOptions? jsonSerializerOptions = null, System.Threading.CancellationToken cancellationToken = default) { }
+    }
+    public sealed class OpenCodeAgentOptions
+    {
+        public OpenCodeAgentOptions() { }
+        public string? Agent { get; set; }
+        public string? Directory { get; set; }
+        public OpenCode.Sdk.Models.ModelRef? Model { get; set; }
+        public System.Func<OpenCode.Sdk.Models.PermissionRequest, System.Threading.CancellationToken, System.Threading.Tasks.ValueTask<OpenCode.Sdk.Models.SessionPermissionReplyRequest>>? OnPermissionRequest { get; set; }
+        public System.Collections.Generic.IReadOnlyList<OpenCode.Sdk.Models.PermissionRule>? Permissions { get; set; }
+        public string? Title { get; set; }
+    }
+    [System.Diagnostics.DebuggerDisplay("{DebuggerDisplay,nq}")]
+    public sealed class OpenCodeAgentSession : Microsoft.Agents.AI.AgentSession
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("sessionId")]
+        public string? SessionId { get; }
+    }
+}

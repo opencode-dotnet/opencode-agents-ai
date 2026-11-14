@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Text.Json;
 using PublicApiGenerator;
 using Testably.Abstractions;
 
@@ -145,7 +146,7 @@ internal static class ShippedAssetSurface
             }
 
             var sibling = FileSystem.Path.Combine(FileSystem.Path.GetDirectoryName(asset) ?? string.Empty, name + ".dll");
-            var package = (FileSystem.File.Exists(sibling) ? sibling : PackageAssembly(name, targetFramework))
+            var package = (FileSystem.File.Exists(sibling) ? sibling : await PackageAssemblyAsync(name, targetFramework).ConfigureAwait(false))
                 ?? throw new InvalidOperationException(
                     $"The {targetFramework} asset references '{name}', which is neither in its framework, nor beside it, nor in the global packages folder.");
             FileSystem.File.Copy(package, FileSystem.Path.Combine(staging, FileSystem.Path.GetFileName(package)), overwrite: true);
@@ -156,24 +157,35 @@ internal static class ShippedAssetSurface
         }
     }
 
-    private static string? PackageAssembly(string name, string targetFramework)
+    private static async Task<string?> PackageAssemblyAsync(string name, string targetFramework)
     {
-        var root = FileSystem.Path.Combine(Metadata("NuGetPackageRoot"), name.ToLowerInvariant());
-        if (!FileSystem.Directory.Exists(root))
+        // The downlevel FileSystemStream has no asynchronous disposal member.
+#if NET
+        await using var stream = FileSystem.File.OpenRead(Metadata("ShippedProjectAssets"));
+#else
+        using var stream = FileSystem.File.OpenRead(Metadata("ShippedProjectAssets"));
+#endif
+        using var assets = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        var target = assets.RootElement.GetProperty("targets").GetProperty(targetFramework);
+        var libraries = assets.RootElement.GetProperty("libraries");
+        foreach (var library in target.EnumerateObject())
         {
-            return null;
+            if (!library.Value.TryGetProperty("compile", out var items) && !library.Value.TryGetProperty("runtime", out items))
+            {
+                continue;
+            }
+
+            foreach (var item in items.EnumerateObject())
+            {
+                if (string.Equals(FileSystem.Path.GetFileName(item.Name), name + ".dll", StringComparison.OrdinalIgnoreCase)
+                    && libraries.GetProperty(library.Name).GetProperty("path").GetString() is { } packagePath)
+                {
+                    return FileSystem.Path.Combine(Metadata("NuGetPackageRoot"), packagePath, item.Name);
+                }
+            }
         }
 
-        string[] folders = targetFramework switch
-        {
-            "netstandard2.0" => ["netstandard2.0"],
-            "net472" => ["net472", "net462", "net461", "netstandard2.0"],
-            _ => [targetFramework, "net10.0", "net9.0", "net8.0", "netstandard2.1", "netstandard2.0"],
-        };
-        return FileSystem.Directory.EnumerateDirectories(root)
-            .OrderByDescending(static version => VersionOf(FileSystem.Path.GetFileName(version)))
-            .SelectMany(version => folders.Select(folder => FileSystem.Path.Combine(version, "lib", folder, name + ".dll")))
-            .FirstOrDefault(FileSystem.File.Exists);
+        return null;
     }
 
     private static async Task<List<string>> ReferencesOfAsync(string assembly)
