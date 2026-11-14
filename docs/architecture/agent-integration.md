@@ -1,6 +1,6 @@
 # Agent Integration Architecture
 
-Date: 2026-11-14
+Date: 2026-11-15
 
 Canonical current rules for the agent contract, session ownership, the harness and orchestration
 boundary, dependencies, and upstream parity. Projects and packaging live in
@@ -37,10 +37,12 @@ prompt to a busy OpenCode session is queued behind its current turn, never steer
 ## Permission requests
 
 The caller's callback answers a permission request; with no callback the agent rejects it, so
-nothing is approved and nothing throws
+nothing is approved; a missing callback is not itself an exception
 ([ADR-0002](../adr/0002-permission-requests-go-to-a-caller-callback.md)). The agent answers only
 requests of its own OpenCode session and of that session's children, because one OpenCode server
 carries the requests of every client.
+
+A failed reply to OpenCode leaves the run as an exception; only a not-found reply for a request that this run's own rejection already settled is ignored. OpenCode's non-interactive client ignores every reply failure; the agent surfaces them because a request whose answer was lost otherwise blocks its session without a trace. The step is reverted if OpenCode starts retrying or reconciling lost replies itself.
 
 ## Cancellation
 

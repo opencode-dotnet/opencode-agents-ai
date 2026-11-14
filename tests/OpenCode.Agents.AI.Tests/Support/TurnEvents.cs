@@ -7,6 +7,23 @@ internal static class TurnEvents
 {
     public static IEvent Connected() => new EventServerConnected { Id = "event_connected", Data = new Dictionary<string, JsonElement>(StringComparer.Ordinal) };
 
+    public static PermissionAsked PermissionAsked(string requestId, string sessionId = FakeOpenCode.SessionId) => new()
+    {
+        Id = "event_permission_asked",
+        Created = 1,
+        Data = new PermissionAskedData
+        {
+            Id = requestId,
+            SessionId = sessionId,
+            Action = "edit",
+            Resources = ["z.cs", "a.cs"],
+            Save = ["z/*", "a/*"],
+            Metadata = new Dictionary<string, JsonElement>(StringComparer.Ordinal) { ["reason"] = JsonSerializer.SerializeToElement("update") },
+            Source = new PermissionSourceTool { Type = "tool", MessageId = "msg_permission", Id = "call_edit" },
+            Message = "Update these files?",
+        },
+    };
+
     public static IEvent Delivered(string inboxId, string sessionId = FakeOpenCode.SessionId) => new SessionInboxDelivered
     {
         Id = "event_delivered",

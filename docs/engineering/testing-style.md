@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-14
+Date: 2026-11-15
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in
@@ -91,7 +91,7 @@ the observed fixture count rather than projecting completeness onto it.
 
 ## 4. Fakes and mocks
 
-- **Substitute at seams only** (NSubstitute over interfaces). Records and
+- **Substitute at seams only** (NSubstitute over interfaces, or over the OpenCode .NET SDK's documented mocking seam: its clients' protected constructors and virtual members). Records and
   pure classes are constructed, never mocked.
 - **Never hand-build types you do not own** where a published contract can be exercised
   instead. This is the authorship side of the fakes-only-for-published-contracts posture
@@ -227,6 +227,8 @@ This product's critical rules:
 - A session with an id is continued, not created again.
 - A run ends only on the three turn-end events.
 - A tool result closes its call.
+- With no callback a permission request is rejected.
+- The callback's reply reaches OpenCode unchanged.
 
 Mutation-tool scores are advisory. A tool that compiles mutants without the analyzer wall reports
 kills that the real build would reject, so its results are replayed through the full build before

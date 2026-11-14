@@ -15,30 +15,15 @@ internal sealed class FakeOpenCode
     {
         Client = Substitute.For<OpenCodeClient>();
         Sessions = Substitute.For<SessionsClient>();
-        Session = Substitute.For<SessionClient>();
+        Session = AddSession(SessionId, parentId: null);
         var events = Substitute.For<EventsClient>();
         Client.Sessions.Returns(Sessions);
         Client.Events.Returns(events);
-        Sessions.GetSessionClient(SessionId).Returns(Session);
         Sessions.CreateSessionAsync(Arg.Any<SessionCreateRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionCreateResponse
             {
                 Status = 200,
-                Session = new SessionInfo
-                {
-                    Id = SessionId,
-                    ProjectId = "project_test",
-                    Cost = 0,
-                    Tokens = new TokenUsageInfo
-                    {
-                        Input = 0,
-                        Output = 0,
-                        Reasoning = 0,
-                        Cache = new TokenUsageInfoCache { Read = 0, Write = 0 },
-                    },
-                    Time = new SessionInfoTime { Created = 1, Updated = 1 },
-                    Location = new LocationPublicRef { Directory = "test-directory" },
-                },
+                Session = SessionInfo(SessionId, parentId: null),
             });
         events.SubscribeAsync(Arg.Any<EventSubscribeRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(call => _bus.Reader.ReadAllAsync(call.Arg<CancellationToken>()));
@@ -51,6 +36,17 @@ internal sealed class FakeOpenCode
     public SessionsClient Sessions { get; }
 
     public SessionClient Session { get; }
+
+    public SessionClient AddSession(string sessionId, string? parentId)
+    {
+        var client = Substitute.For<SessionClient>();
+        Sessions.GetSessionClient(sessionId).Returns(client);
+        client.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new SessionResponse { Status = 200, Session = SessionInfo(sessionId, parentId) });
+        client.ReplyToPermissionAsync(Arg.Any<string>(), Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new SessionPermissionReplyResponse { Status = 204 });
+        return client;
+    }
 
     public void OnPrompt(Func<SessionPromptRequest, IEnumerable<IEvent>> turn)
     {
@@ -86,4 +82,21 @@ internal sealed class FakeOpenCode
 
     private static string PromptId(SessionPromptRequest request) =>
         request.Id.Value ?? throw new InvalidOperationException("The prompt must provide its id.");
+
+    private static SessionInfo SessionInfo(string sessionId, string? parentId) => new()
+    {
+        Id = sessionId,
+        ParentId = parentId,
+        ProjectId = "project_test",
+        Cost = 0,
+        Tokens = new TokenUsageInfo
+        {
+            Input = 0,
+            Output = 0,
+            Reasoning = 0,
+            Cache = new TokenUsageInfoCache { Read = 0, Write = 0 },
+        },
+        Time = new SessionInfoTime { Created = 1, Updated = 1 },
+        Location = new LocationPublicRef { Directory = "test-directory" },
+    };
 }

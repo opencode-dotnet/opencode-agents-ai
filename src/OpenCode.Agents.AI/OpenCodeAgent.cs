@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using OpenCode.Agents.AI.Permissions;
 using OpenCode.Agents.AI.Turns;
 using OpenCode.Sdk;
 using OpenCode.Sdk.Models;
@@ -99,6 +100,7 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
         }
 
         var client = await GetSessionClientAsync(typedSession, cancellationToken).ConfigureAwait(false);
+        var permissions = new PermissionResponder(_client.Sessions, typedSession.SessionId!, _options.OnPermissionRequest); // GetSessionClientAsync assigns the session id before returning.
         var pump = EventPump.Start(_client.Events, cancellationToken);
         await using var pumpLifetime = pump.ConfigureAwait(false);
         var events = pump.Reader.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
@@ -115,14 +117,14 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             Text = string.Join('\n', texts),
             Delivery = SessionInboxDelivery.Queue,
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
-        await foreach (var update in ReadTurnAsync(events, typedSession, promptId, cancellationToken).ConfigureAwait(false))
+        await foreach (var update in ReadTurnAsync(events, typedSession, promptId, permissions, cancellationToken).ConfigureAwait(false))
         {
             yield return update;
         }
     }
 
     private async IAsyncEnumerable<AgentResponseUpdate> ReadTurnAsync(
-        IAsyncEnumerator<IEvent> events, OpenCodeAgentSession session, string promptId,
+        IAsyncEnumerator<IEvent> events, OpenCodeAgentSession session, string promptId, PermissionResponder permissions,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var mapper = new TurnEventMapper(Id, promptId);
@@ -140,6 +142,11 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
                 }
 
                 var current = events.Current;
+                if (current is PermissionAsked asked)
+                {
+                    await permissions.RespondAsync(PermissionRequest(asked), cancellationToken).ConfigureAwait(false);
+                }
+
                 var eventSessionId = current switch
                 {
                     ISessionScopedEvent scoped => scoped.SessionId,
@@ -193,6 +200,18 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             throw new InvalidOperationException("The event stream ended before the turn ended.");
         }
     }
+
+    private static PermissionRequest PermissionRequest(PermissionAsked asked) => new()
+    {
+        Id = asked.Data.Id,
+        SessionId = asked.Data.SessionId,
+        Action = asked.Data.Action,
+        Resources = asked.Data.Resources,
+        Save = asked.Data.Save,
+        Metadata = asked.Data.Metadata,
+        Source = asked.Data.Source,
+        Message = asked.Data.Message,
+    };
 
     /// <inheritdoc/>
     protected override string? IdCore => _id;

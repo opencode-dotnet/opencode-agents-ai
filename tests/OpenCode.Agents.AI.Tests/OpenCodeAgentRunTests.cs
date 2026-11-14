@@ -14,6 +14,71 @@ public sealed class OpenCodeAgentRunTests
     private readonly FakeOpenCode _fake = new();
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task RunAsync_Should_Answer_A_Permission_Request_And_Finish_The_Turn(bool beforeDelivery, bool child)
+    {
+        var target = child ? _fake.AddSession("ses_child", FakeOpenCode.SessionId) : _fake.Session;
+        var ask = TurnEvents.PermissionAsked("per_1", child ? "ses_child" : FakeOpenCode.SessionId);
+        var received = new List<PermissionRequest>();
+        var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+        _fake.OnPrompt(prompt =>
+        [
+            beforeDelivery ? ask : TurnEvents.Delivered(prompt.Id.Value!),
+            beforeDelivery ? TurnEvents.Delivered(prompt.Id.Value!) : ask,
+            TurnEvents.Text("child text", "ses_child"), TurnEvents.Text("done"), TurnEvents.Succeeded(),
+        ]);
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = (request, _) => { received.Add(request); return new(reply); },
+        });
+
+        var response = await agent.RunAsync("hello");
+
+        await Assert.That(received.Count).IsEqualTo(1);
+        var actual = received.Single();
+        await Assert.That(actual.Id).IsEqualTo("per_1");
+        await Assert.That(actual.SessionId).IsEqualTo(ask.Data.SessionId);
+        await Assert.That(actual.Action).IsEqualTo("edit");
+        await Assert.That(actual.Resources).IsSameReferenceAs(ask.Data.Resources);
+        await Assert.That(actual.Resources).IsEquivalentTo(["z.cs", "a.cs"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(actual.Save).IsSameReferenceAs(ask.Data.Save);
+        await Assert.That(actual.Save).IsEquivalentTo(["z/*", "a/*"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(actual.Metadata).IsSameReferenceAs(ask.Data.Metadata);
+        await Assert.That(actual.Metadata?["reason"].GetString()).IsEqualTo("update");
+        await Assert.That(actual.Source).IsSameReferenceAs(ask.Data.Source);
+        await Assert.That(actual.Source?.Type).IsEqualTo("tool");
+        await Assert.That(actual.Source?.MessageId).IsEqualTo("msg_permission");
+        await Assert.That(actual.Source?.Id).IsEqualTo("call_edit");
+        await Assert.That(actual.Message).IsEqualTo("Update these files?");
+        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Is<SessionPermissionReplyRequest>(value => ReferenceEquals(value, reply)), null, Arg.Any<CancellationToken>());
+        await Assert.That(response.Text).IsEqualTo("done");
+        if (child)
+        {
+            await _fake.Session.DidNotReceive().ReplyToPermissionAsync(Arg.Any<string>(), Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+            await Assert.That(response.Messages.SelectMany(message => message.Contents).Select(content => content.RawRepresentation)).DoesNotContain(ask);
+        }
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Reject_Then_Surface_The_Callback_Failure_And_Close_The_Bus()
+    {
+        var failure = new InvalidOperationException("permission callback failed");
+        var ask = TurnEvents.PermissionAsked("per_failed");
+        _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), ask, TurnEvents.Text("not success"), TurnEvents.Succeeded()]);
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions { OnPermissionRequest = (_, _) => throw failure });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.RunAsync("hello"));
+
+        await Assert.That(error).IsSameReferenceAs(failure);
+        await _fake.Session.Received(1).ReplyToPermissionAsync("per_failed",
+            Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Reject && !reply.Message.IsSet), null, CancellationToken.None);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    [Test]
     public async Task RunAsync_Should_Return_The_Turns_Text()
     {
         _fake.OnPrompt(request => [TurnEvents.Delivered(request.Id.Value!), TurnEvents.Text("Hel"), TurnEvents.Text("lo"), TurnEvents.Succeeded()]);
