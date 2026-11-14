@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(DefaultTargetFramework)</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../tools/OpenCode.Agents.AI.Tools/OpenCode.Agents.AI.Tools.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
+    <PackageReference Include="Spectre.Console.Cli.Testing" />
+    <PackageReference Include="Testably.Abstractions.Testing" />
+    <PackageReference Include="TUnit" />
+  </ItemGroup>
+
+</Project>

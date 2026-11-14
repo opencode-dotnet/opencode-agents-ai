@@ -24,6 +24,8 @@ prefix for an unrelated owner.
 |---|---|
 | `src/OpenCode.Agents.AI` | The MAF provider library; the only distributed product |
 | `tests/OpenCode.Agents.AI.Tests` | Product tests, including the public API baseline |
+| `tools/OpenCode.Agents.AI.Tools` | The repository tool behind `tools/opencode-tool.cs`; not a package artifact |
+| `tests/OpenCode.Agents.AI.Tools.Tests` | The tool's tests |
 
 The test project is not a package artifact.
 
@@ -35,6 +37,24 @@ A folder, helper, or project is created only for a consumer: there is no shared 
 benchmark project, or generator without one.
 `Directory.Build.targets` and `.globalconfig` exist only for an actual late-bound invariant or a
 validated compilation-wide arbitration (`../engineering/quality-gates.md`).
+
+The repository tool foundation is copied from `opencode-dotnet/opencode-sdk-dotnet` commit
+`b86e416427ee`, with namespace root `OpenCode.Sdk.Tools` changed to `OpenCode.Agents.AI.Tools`.
+The copies stay separate for now; shared-foundation work is tracked in
+[opencode-dotnet/opencode-agents-ai#5](https://github.com/opencode-dotnet/opencode-agents-ai/issues/5).
+These are the differences from the SDK:
+
+| # | Difference from the SDK | Reason |
+|---|---|---|
+| 1 | Not copied: `Generator/`, `Output/`, `Benchmarks/`, `TestRoster/`, `Serialization/`, and the commands `generate`, `refresh-spec`, `compare-benchmarks`, `verify-test-roster`, `merge-group-reuse`, with their `ToolApp` registrations, tests and test support | This repository generates nothing and has no spec and no benchmark; the roster and merge-group commands are copied when they are needed (#5) |
+| 2 | `IProcessRunner` and `ProcessResult` move from `Generator/Refresh/Abstractions/` to `Infrastructure/Processes/Abstractions/` (namespace `OpenCode.Agents.AI.Tools.Infrastructure.Processes.Abstractions`); `CliWrapProcessRunner` moves from `Generator/Refresh/` to `Infrastructure/Processes/` (namespace `OpenCode.Agents.AI.Tools.Infrastructure.Processes`); their text is otherwise unchanged | Their SDK home is the generator's folder, which is not copied; seams keep their `Abstractions/` folder |
+| 3 | No source split: `CloneScopeFilter`, `CloneSourceSplit` and `CloneDetector.ReadSourceSplitAsync` are not copied; `CloneScope` loses `Filter`; `CloneDetector.RunAsync` loses its `split` parameter; the detector's ignore list is the common globs plus `scope.Ignore` | The split reads the generator's manifest; this repository has no generated source |
+| 4 | `CloneScopes.All` holds three scopes: `src`, `tools`, `tests`. No `generated` scope | The same |
+| 5 | `VerifyClonesCommand.SolutionFileName` and the test support's `RepositoryRoot.SolutionFileName` are `OpenCode.Agents.AI.slnx`; the command's description is "Run the pinned clone detector: hand-written src/, tools/ and tests/ against their baselines." | This repository's solution; no reported-only scope |
+| 6 | `Properties/AssemblyInfo.cs` names one friend, `OpenCode.Agents.AI.Tools.Tests`; the project file has no `AssemblyMetadata` item | No performance test project; only the generator's formatter reads that metadata |
+| 7 | `tools/jscpd/package.json`: name `opencode-agents-ai-clone-detector`, and a `packageManager` field that the Bun setup action reads | This repository has no `external/opencode` to read the Bun version from |
+| 8 | `ToolAppTests` raise their failures through the process-runner seam and run `verify-clones` | The SDK's tests use the `generate` command and its formatter seam, which are not copied |
+| 9 | The Bun setup action uses `oven-sh/setup-bun@v2`, the major tag this repository's action rule requires; the SDK pins a SHA. | Actions follow `../engineering/quality-gates.md` |
 
 ## .NET SDK
 
@@ -87,6 +107,8 @@ document. A polyfilled member whose downlevel behaviour is a hazard is banned in
   never its source or internals; it is added with its first consumer.
 - MAF packages are added with their first consumer. The dependency direction and the MAF boundary
   are owned by `agent-integration.md`.
+- The clone detector is the repository's one npm dependency, pinned exactly in
+  `tools/jscpd/package.json` with its own `bun.lock`.
 - Restore uses `nuget.config` with a cleared source list and nuget.org only, unless a concrete new
   source is approved. NuGetAudit fails restore on an advisory (`../engineering/quality-gates.md`),
   and the remedy is a prompt pin bump (`../engineering/workflow.md`).

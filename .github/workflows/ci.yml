@@ -117,6 +117,16 @@ jobs:
           dotnet tool restore
           exit $LASTEXITCODE
 
+      - name: Setup pinned Bun
+        uses: ./.github/actions/setup-pinned-bun
+
+      - name: Install clone detector
+        working-directory: tools/jscpd
+        run: |
+          $ErrorActionPreference = 'Stop'
+          bun install --frozen-lockfile --ignore-scripts
+          exit $LASTEXITCODE
+
       - name: Detect slop
         run: |
           $ErrorActionPreference = 'Stop'
@@ -147,6 +157,26 @@ jobs:
           dotnet pack src/OpenCode.Agents.AI/OpenCode.Agents.AI.csproj --no-build --no-restore --configuration Release -p:EnablePackageValidation=true --output "${{ runner.temp }}/package-validation"
           exit $LASTEXITCODE
 
+      - name: Tooling entry smoke
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/opencode-tool.cs --help
+          exit $LASTEXITCODE
+
+      - name: Verify clones
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --file tools/opencode-tool.cs -- verify-clones --report-directory "${{ runner.temp }}/clone-reports"
+          exit $LASTEXITCODE
+
+      - name: Upload clone reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clone-reports-${{ github.event.pull_request.number || github.run_number }}
+          path: ${{ runner.temp }}/clone-reports
+          if-no-files-found: ignore
+
   build-and-test:
     name: Build and test (${{ matrix.os }})
     needs: changes
@@ -172,6 +202,16 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet --version
+          exit $LASTEXITCODE
+
+      - name: Setup pinned Bun
+        uses: ./.github/actions/setup-pinned-bun
+
+      - name: Install clone detector
+        working-directory: tools/jscpd
+        run: |
+          $ErrorActionPreference = 'Stop'
+          bun install --frozen-lockfile --ignore-scripts
           exit $LASTEXITCODE
 
       - name: Build

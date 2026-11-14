@@ -1,0 +1,243 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using OpenCode.Agents.AI.Tools.Clones;
+using OpenCode.Agents.AI.Tools.Infrastructure.Processes;
+using OpenCode.Agents.AI.Tools.Tests.Support;
+using Testably.Abstractions;
+using TUnit.Assertions.Enums;
+
+namespace OpenCode.Agents.AI.Tools.Tests.Clones;
+
+/// <summary>How the detector runs one scope: the arguments each scope gets, the manifest split in its config, and the report it reads.</summary>
+public sealed class CloneDetectorTests
+{
+    private const string Config = "work/scope.json";
+    private const string Fingerprints = "--fail-on-new-clones";
+    private const string FailOnEmpty = "--fail-on-empty";
+    private const string Assignment = "_field = collaborator ?? throw new ArgumentNullException(nameof(collaborator));";
+    private const string NullGuard = "ArgumentNullException.ThrowIfNull(node);";
+    private const string TextGuard = "ArgumentException.ThrowIfNullOrWhiteSpace(name);";
+    private readonly RealFileSystem _guardFiles = new();
+
+    [Test]
+    public async Task RunAsync_Should_Write_The_Using_Directive_Ignore_Pattern()
+    {
+        var scenario = await new CloneScenario().WithRun("src").BuildAsync();
+        _ = await RunAsync(scenario, "src");
+        var config = scenario.FileSystem.Path.Combine(scenario.FileSystem.Path.GetTempPath(), "detector-work", "src.json");
+        using var document = JsonDocument.Parse(await scenario.FileSystem.File.ReadAllTextAsync(config));
+
+        await Assert.That(document.RootElement.TryGetProperty("ignorePattern", out var patterns)).IsTrue();
+        await Assert.That(patterns.EnumerateArray().Select(static pattern => pattern.GetString()!))
+            .IsEquivalentTo([
+                @"(?m)^[ \t]*(global[ \t]+)?using[ \t]+(static[ \t]+)?([A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*)?[A-Za-z_][A-Za-z0-9_.]*[ \t]*;",
+                @"(?m)^[ \t]*_[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\?\?[ \t]*throw[ \t]+new[ \t]+ArgumentNullException\(nameof\([A-Za-z_][A-Za-z0-9_]*\)\);[ \t]*$",
+                @"(?m)^[ \t]*ArgumentNullException\.ThrowIfNull\([A-Za-z_][A-Za-z0-9_]*\);[ \t]*$",
+                @"(?m)^[ \t]*ArgumentException\.ThrowIfNullOrWhiteSpace\([A-Za-z_][A-Za-z0-9_]*\);[ \t]*$",
+            ], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Ignore_A_Shared_Using_Header()
+    {
+        var result = await new CloneScenario().DetectUsingPairAsync(resourceBody: false);
+
+        await Assert.That(result.ExitCode).IsEqualTo(0);
+        await Assert.That(result.Clones).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(Assignment, 3)]
+    [Arguments(NullGuard, 8)]
+    [Arguments(TextGuard, 8)]
+    public async Task RunAsync_Should_Apply_Each_Guard_Ignore_Pattern(string statement, int repetitions)
+    {
+        var reports = await DetectGuardPairAsync(string.Join('\n', Enumerable.Repeat(statement, repetitions)), string.Empty);
+
+        await Assert.That(reports.Select(static report => report.GetProperty("statistics").GetProperty("total").GetProperty("clones").GetInt32()))
+            .IsEquivalentTo([0, 1], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Arguments("", 0, 1, "")]
+    [Arguments("var total = node.GetHashCode(); total += name.Length; total *= 17; return total.ToString();", 1, 2, "3-14")]
+    [Arguments("ArgumentNullException.ThrowIfNull(node); Record(node);", 1, 3, "3-15")]
+    [Arguments("_field = collaborator.Value ?? throw new ArgumentNullException(nameof(collaborator));", 1, 3, "3-15")]
+    [Arguments("_field = collaborator ?? throw new InvalidOperationException(nameof(collaborator));", 1, 3, "3-15")]
+    public async Task RunAsync_Should_Keep_Only_Code_After_An_Anchored_Guard_Prelude(string body, int clones, int repetitions, string range)
+    {
+        var reports = await DetectGuardPairAsync(NullGuard + "\n" + TextGuard, string.Join('\n', Enumerable.Repeat(body, repetitions)));
+
+        await Assert.That(reports[0].GetProperty("statistics").GetProperty("total").GetProperty("clones").GetInt32()).IsEqualTo(clones);
+        string[] expected = clones == 0 ? [] : ["First.cs:" + range, "Second.cs:" + range];
+        await Assert.That(reports[0].GetProperty("duplicates").EnumerateArray()
+            .SelectMany(static clone => new[] { clone.GetProperty("firstFile"), clone.GetProperty("secondFile") })
+            .Select(static file => string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"{file.GetProperty("name").GetString()}:{file.GetProperty("start").GetInt32()}-{file.GetProperty("end").GetInt32()}")))
+            .IsEquivalentTo(expected, CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Keep_A_Shared_Body_With_Using_Statements()
+    {
+        var result = await new CloneScenario().DetectUsingPairAsync(resourceBody: true);
+
+        await Assert.That(result.ExitCode).IsEqualTo(0);
+        await Assert.That(result.Clones).IsEqualTo(1);
+        await Assert.That(result.DuplicatedLines).IsGreaterThan(10);
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Keep_String_Literal_Using_Text_In_Body_Clone_Tokens()
+    {
+        var tokens = await new CloneScenario().DetectStringLiteralPairTokensAsync();
+
+        await Assert.That(tokens[0]).IsGreaterThan(50);
+        await Assert.That(tokens[0]).IsEqualTo(tokens[1]);
+    }
+
+    [Test]
+    public async Task Arguments_Should_Gate_Hand_Written_Src_Against_Its_Baseline()
+    {
+        var arguments = CloneDetector.Arguments(Scope("src"), Config, updateBaseline: false);
+
+        await Assert.That(arguments).IsEquivalentTo(
+            [CloneDetector.RunnerPath, "src", "--config", Config, FailOnEmpty, "--baseline", "tools/jscpd/src.baseline.json", Fingerprints], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Arguments_Should_Add_The_Three_Percent_Threshold_For_Tools()
+    {
+        var arguments = CloneDetector.Arguments(Scope("tools"), Config, updateBaseline: false);
+
+        await Assert.That(arguments).IsEquivalentTo(
+            [CloneDetector.RunnerPath, "tools", "--config", Config, FailOnEmpty, "--baseline", "tools/jscpd/tools.baseline.json", Fingerprints, "--threshold", "3"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Arguments_Should_Gate_Tests_Against_Its_Baseline_And_The_Threshold()
+    {
+        var arguments = CloneDetector.Arguments(Scope("tests"), Config, updateBaseline: false);
+
+        await Assert.That(arguments).IsEquivalentTo(
+            [CloneDetector.RunnerPath, "tests", "--config", Config, FailOnEmpty, "--baseline", "tools/jscpd/tests.baseline.json", Fingerprints, "--threshold", "5"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Arguments_Should_Run_A_Report_Scope_Without_Gate_Arguments()
+    {
+        var arguments = CloneDetector.Arguments(new CloneScope("report", "src", [], Baseline: null, Threshold: null), Config, updateBaseline: true);
+
+        await Assert.That(arguments).IsEquivalentTo([CloneDetector.RunnerPath, "src", "--config", Config, FailOnEmpty], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Arguments_Should_Swap_In_The_Baseline_Update_For_A_Gated_Scope()
+    {
+        var arguments = CloneDetector.Arguments(Scope("tools"), Config, updateBaseline: true);
+
+        await Assert.That(arguments).IsEquivalentTo(
+            [CloneDetector.RunnerPath, "tools", "--config", Config, FailOnEmpty, "--baseline", "tools/jscpd/tools.baseline.json", "--update-baseline"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Read_The_Totals_Of_The_Report()
+    {
+        var scenario = await new CloneScenario().WithRun("src", clones: 4, newClones: 1).BuildAsync();
+
+        var result = await RunAsync(scenario, "src");
+
+        await Assert.That(result.Clones).IsEqualTo(4);
+        await Assert.That(result.DuplicatedLines).IsEqualTo(40);
+        await Assert.That(result.Lines).IsEqualTo(1000);
+        await Assert.That(result.Percentage).IsEqualTo(4.0);
+        await Assert.That(result.NewClones).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Place_Each_New_Clone_Under_The_Scanned_Path_And_Leave_Old_Ones_Out()
+    {
+        var scenario = await new CloneScenario().WithRun("src", exitCode: 1, clones: 5, newClones: 1).BuildAsync();
+
+        var result = await RunAsync(scenario, "src");
+
+        // Only membership and cardinality matter; this expected collection has one item.
+        await Assert.That(result.NewCloneLocations).IsEquivalentTo([new CloneLocation("src/NestedFolderPastTheWrapColumn/A0.cs:3-33", "src/NestedFolderPastTheWrapColumn/B0.cs:5-35", 212)], CollectionOrdering.Any);
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Refuse_When_The_Detector_Writes_No_Report()
+    {
+        var scenario = await new CloneScenario().WithRun("tests", exitCode: 2, standardError: "jscpd: no prebuilt binary", writesReport: false).BuildAsync();
+
+        var exception = await Assert.That(async () => _ = await RunAsync(scenario, "tests")).Throws<CloneDetectorException>();
+
+        await Assert.That(exception!.Message).Contains("'tests'").And.Contains("no prebuilt binary");
+    }
+
+    [Test]
+    public async Task EnsureInstalled_Should_Refuse_With_The_Install_Command_When_The_Detector_Is_Missing()
+    {
+        var scenario = await new CloneScenario().WithoutDetector().BuildAsync();
+
+        var exception = await Assert.That(() => Detector(scenario).EnsureInstalled(scenario.Root)).Throws<CloneDetectorException>();
+
+        await Assert.That(exception!.Message).Contains("bun install --frozen-lockfile --ignore-scripts");
+    }
+
+    private static CloneScope Scope(string name) => CloneScopes.All.Single(scope => scope.Name == name);
+
+    private async Task<IReadOnlyList<JsonElement>> DetectGuardPairAsync(string prelude, string body)
+    {
+        var files = _guardFiles;
+        var root = new RepositoryRoot(files).Locate();
+        var work = files.Path.Combine(files.Path.GetTempPath(), "opencode-guard-clones-" + Guid.NewGuid().ToString("N"));
+        var sources = files.Path.Combine(work, "sources");
+        files.Directory.CreateDirectory(sources);
+        try
+        {
+            foreach (var name in new[] { "First", "Second" })
+            {
+                var unique = name == "First"
+                    ? "class Values { " + string.Join('\n', Enumerable.Range(0, 20).Select(static index => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"public int Value{index} => {index};"))) + " }"
+                    : "enum Members { " + string.Join(',', Enumerable.Range(0, 20).Select(static index => "Member" + index.ToString(System.Globalization.CultureInfo.InvariantCulture))) + " }";
+                await files.File.WriteAllTextAsync(files.Path.Combine(sources, name + ".cs"),
+                    $"class {name}\n{{\npublic {name}(object collaborator)\n{{\n{Assignment}\n}}\npublic string Project(object node, string name, object owner, string pointer, string container, bool required)\n{{\n{prelude}\n{body}\n}}\n}}\n{unique}");
+            }
+
+            var runner = new CliWrapProcessRunner();
+            var detector = new CloneDetector(files, runner);
+            var scope = new CloneScope("guard-pair", sources, [], Baseline: null, Threshold: null);
+            var result = await detector.RunAsync(root, scope, work, updateBaseline: false, CancellationToken.None);
+            await Assert.That(result.ExitCode).IsEqualTo(0).Because(result.StandardError);
+            using var ignored = JsonDocument.Parse(await files.File.ReadAllTextAsync(detector.ReportPath(work, scope)));
+            var config = files.Path.Combine(work, scope.Name + ".json");
+            var document = JsonNode.Parse(await files.File.ReadAllTextAsync(config))!;
+            var patterns = document["ignorePattern"]!.AsArray();
+            while (patterns.Count > 1)
+            {
+                patterns.RemoveAt(1);
+            }
+
+            await files.File.WriteAllTextAsync(config, document.ToJsonString());
+            var unignoredResult = await runner.RunAsync("bun", CloneDetector.Arguments(scope, config, updateBaseline: false), root, CancellationToken.None);
+            await Assert.That(unignoredResult.ExitCode).IsEqualTo(0).Because(unignoredResult.StandardError);
+            using var unignored = JsonDocument.Parse(await files.File.ReadAllTextAsync(detector.ReportPath(work, scope)));
+            return [ignored.RootElement.Clone(), unignored.RootElement.Clone()];
+        }
+        finally
+        {
+            files.Directory.Delete(work, recursive: true);
+        }
+    }
+
+    private static CloneDetector Detector(CloneScenario scenario) => new(scenario.FileSystem, scenario.Runner);
+
+    private static async Task<CloneScopeResult> RunAsync(CloneScenario scenario, string scope)
+    {
+        var detector = Detector(scenario);
+        var work = scenario.FileSystem.Path.Combine(scenario.FileSystem.Path.GetTempPath(), "detector-work");
+        scenario.FileSystem.Directory.CreateDirectory(work);
+        return await detector.RunAsync(scenario.Root, Scope(scope), work, updateBaseline: false, CancellationToken.None);
+    }
+}

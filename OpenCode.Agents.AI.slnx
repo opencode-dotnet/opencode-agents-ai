@@ -12,5 +12,10 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/OpenCode.Agents.AI.Tests/OpenCode.Agents.AI.Tests.csproj" />
+    <Project Path="tests/OpenCode.Agents.AI.Tools.Tests/OpenCode.Agents.AI.Tools.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <File Path="tools/opencode-tool.cs" />
+    <Project Path="tools/OpenCode.Agents.AI.Tools/OpenCode.Agents.AI.Tools.csproj" />
   </Folder>
 </Solution>

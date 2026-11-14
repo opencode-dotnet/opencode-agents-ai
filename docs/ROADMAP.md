@@ -45,5 +45,5 @@ next.
 
 - **No provider behavior yet.** The library's public surface is empty; the build backbone and local
   check in `engineering/quality-gates.md` are in place.
-- **No clone gate yet.** It is deferred to the first version, no later than its first pull
-  request that adds hand-written production or test code.
+- **Clone baselines pending.** The repository tool, tests and CI steps exist; the three baselines
+  are created after the first library source lands, before this branch goes to CI.

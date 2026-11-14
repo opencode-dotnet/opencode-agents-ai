@@ -1,6 +1,6 @@
 # Engineering Quality Gates
 
-Date: 2026-11-06
+Date: 2026-11-14
 
 Canonical quality policy for product code, repository tooling, tests, analyzers, dependencies,
 performance evidence, and completion claims.
@@ -99,6 +99,7 @@ dotnet tool run slopwatch analyze --exclude ".scratchpad/**" --fail-on warning
 dotnet build OpenCode.Agents.AI.slnx --configuration Release
 dotnet format whitespace OpenCode.Agents.AI.slnx --verify-no-changes --no-restore
 dotnet format style OpenCode.Agents.AI.slnx --verify-no-changes --no-restore --severity warn
+dotnet run --file tools/opencode-tool.cs -- verify-clones
 dotnet test --solution OpenCode.Agents.AI.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1
 ```
 
@@ -126,8 +127,10 @@ rerun.
 
 A change limited to Markdown and `LICENSE` needs no local check.
 
-A fresh clone or worktree runs `dotnet tool restore` once before its first local check, which
-makes the repository's local tools, Slopwatch among them, available.
+A fresh clone or worktree needs Bun and runs `dotnet tool restore` once before its first local
+check, which makes the repository's local tools, Slopwatch among them, available. It also runs
+`(cd tools/jscpd && bun install --frozen-lockfile --ignore-scripts)` to install the pinned clone
+detector.
 
 The build is the semantic analyzer wall: compiler diagnostics, build-enforceable IDE rules, SDK CA
 rules, third-party analyzers, and source-generator diagnostics run there for every compilation. The
@@ -156,13 +159,15 @@ This is the decided CI contract; `../ROADMAP.md` records whether it is in place.
   Git supplies NUL-separated paths with rename detection disabled, so a source-to-Markdown rename
   still selects code. Only an ordinal `.md` suffix or the exact root `LICENSE` path is exempt.
 - **Lint job.** One Linux job restores the local tools, runs Slopwatch, the Release build with the
-  analyzer wall, both format passes, and the library pack with validation. `IncludeNet472Tests`
-  adds the net472 test targets to this build.
+  analyzer wall, both format passes, and the library pack with validation. It sets up pinned Bun,
+  installs the clone detector, runs the tooling entry smoke and verifies clones, uploading clone
+  reports on failure. `IncludeNet472Tests` adds the net472 test targets to this build.
 - **Build/test legs.** Windows, Linux and macOS legs (`windows-2025`, `ubuntu-24.04`, `macos-15`)
   build in Release with `-p:RunAnalyzers=false` and run every test project under the session timeout
   and hang dump below, with `fail-fast: false`. Each sets `TUNIT_DISABLE_ARTIFACT_UPLOAD: true` on
   every test step so TUnit does not upload with the ambient runtime token. net472 tests run on the
-  Windows leg.
+  Windows leg. Every leg sets up pinned Bun and installs the clone detector before building,
+  because the tool's pattern tests run the real detector.
 - **`CI result`.** One fail-closed job named `CI result` runs with `if: always()`, needs every
   other job, and is the one required check: a skipped matrix leg reports under its unexpanded name,
   so the legs cannot be required one by one. A change that reaches code needs every job green; a
@@ -229,6 +234,34 @@ Every test project references the extension: `--hangdump` exits with code 5 in a
 An expired session exits with code 7 and keeps the TRX of the rows that finished, but it doesn't
 name the rows still in flight. When a test step fails, the job also writes that step's test listing
 to the job log, and the rows in flight are among those listed but not recorded.
+
+## Clone gate
+
+The detector ignores using directives and three anchored argument-guard lines: the one-field
+constructor assignment `_name = name ?? throw new ArgumentNullException(nameof(name));`,
+`ArgumentNullException.ThrowIfNull(name);` and `ArgumentException.ThrowIfNullOrWhiteSpace(name);`.
+They carry no logic, so a guard prelude alone is never a clone, while a duplicated body around it
+still is. jscpd skips an ignore pattern it cannot compile (it rejects backreferences) without
+failing, so the detector's tests prove that each pattern takes effect in a real run. A baseline
+entry that matches no clone fails the gate like a new clone does.
+
+The lint job runs `dotnet run --file tools/opencode-tool.cs -- verify-clones`: the pinned jscpd in
+`tools/jscpd/`, installed with the machine's Bun from its own lockfile, at a 50-token minimum over three
+scopes. Hand-written `src/`, `tools/` and `tests/` are gated against the committed baselines in
+`tools/jscpd/`: a clone a baseline does not hold fails the job, `tools/` also fails above 3%
+duplicated lines, and `tests/` above 5%. The tests ceiling is the measurement plus 0.25 points,
+rounded up to the next 0.5%, and it only ever falls: a change that removes test clones lowers it
+to that value when it is lower than the current ceiling. A failure names each new clone with its
+two `file:line` ranges and its size in tokens, and the job keeps the jscpd reports as an artifact. Locally the same command runs from the
+repository root once `bun install --frozen-lockfile --ignore-scripts` has run in `tools/jscpd/`, and the
+local check above runs it.
+
+`verify-clones --update-baseline` rewrites the baselines, mechanically. A pull request whose baseline
+gains a fingerprint or a higher count accounts for each gain in its body, the same way a new
+suppression is called out. A duplicate that existed before and that the change only moved, renamed
+or re-tokened maps to the old fingerprint it replaces, with the fragments' locations before and
+after. Any other gain is a new clone: the body names the reason it stays and the change that will
+remove it. A shrinking baseline needs no reason.
 
 ## Package compatibility
 

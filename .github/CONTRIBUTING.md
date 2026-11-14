@@ -6,9 +6,9 @@ starting work beyond a small fix; describe the use case before proposing an API.
 
 ## Develop from source
 
-You need Git, PowerShell (`pwsh`) and the .NET SDK selected by [`global.json`](../global.json).
+You need Git, PowerShell (`pwsh`), Bun and the .NET SDK selected by [`global.json`](../global.json).
 Follow the [README's source-development route](../README.md#developing). Bootstrap tests require no
-OpenCode server, model provider, Bun, submodule or container.
+OpenCode server, model provider, submodule or container.
 
 Start at [`AGENTS.md`](../AGENTS.md) for the canon relevant to your change. Add tests for behavior
 and keep affected documentation current in the same change. The
