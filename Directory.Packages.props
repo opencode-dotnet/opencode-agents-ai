@@ -19,7 +19,7 @@
     <!-- microsoft packages -->
     <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="1.28.0" />
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.403" />
-    <PackageVersion Include="OpenCodeDotNet.Sdk" Version="1.0.0" />
+    <PackageVersion Include="OpenCodeDotNet.Sdk" Version="1.1.0" />
     <!-- test packages -->
     <PackageVersion Include="Microsoft.Testing.Extensions.HangDump" Version="2.5.1" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
