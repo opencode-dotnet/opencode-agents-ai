@@ -105,19 +105,28 @@ public sealed class TurnEventMapperTests
     [Test]
     public async Task Map_Should_Not_Count_The_Session_Total_As_Usage()
     {
-        var step = (SessionStepEnded)TurnEvents.StepEnded(100, 40, 20, 30, 0.1);
-        var total = new SessionUsageUpdated
-        {
-            Id = "event_usage_updated",
-            Created = 1,
-            Data = new SessionUsageUpdatedData { SessionId = FakeOpenCode.SessionId, Cost = step.Data.Cost, Tokens = step.Data.Tokens },
-        };
+        var total = SessionTotal();
 
         var update = _mapper.Map(total)!;
 
         await Assert.That(update.Contents.Count).IsEqualTo(1);
         await Assert.That(update.Contents[0].GetType()).IsEqualTo(typeof(AIContent));
         await Assert.That(update.Contents[0].RawRepresentation).IsSameReferenceAs(total);
+    }
+
+    [Test]
+    public async Task Map_Should_Not_Add_The_Session_Total_To_A_Later_Step()
+    {
+        _mapper.Map(SessionTotal());
+
+        var update = _mapper.Map(TurnEvents.StepEnded(6.5, 1.6, 0.6, 0.5, 0.01))!;
+
+        var content = await Assert.That(update.Contents.Single()).IsTypeOf<UsageContent>();
+        await Assert.That(content?.Details.InputTokenCount).IsEqualTo(7);
+        await Assert.That(content?.Details.OutputTokenCount).IsEqualTo(2);
+        await Assert.That(content?.Details.ReasoningTokenCount).IsEqualTo(1);
+        await Assert.That(content?.Details.CachedInputTokenCount).IsEqualTo(1);
+        await Assert.That(content?.Details.TotalTokenCount).IsNull();
     }
 
     [Test]
@@ -143,5 +152,16 @@ public sealed class TurnEventMapperTests
         await Assert.That(updates[0].ResponseId).IsEqualTo("msg_prompt");
         await Assert.That(updates[0].MessageId).IsEqualTo("msg_assistant");
         await Assert.That(_mapper.CloseOpenCalls()).IsEmpty();
+    }
+
+    private static SessionUsageUpdated SessionTotal()
+    {
+        var step = (SessionStepEnded)TurnEvents.StepEnded(100, 40, 20, 30, 0.1);
+        return new SessionUsageUpdated
+        {
+            Id = "event_usage_updated",
+            Created = 1,
+            Data = new SessionUsageUpdatedData { SessionId = FakeOpenCode.SessionId, Cost = step.Data.Cost, Tokens = step.Data.Tokens },
+        };
     }
 }

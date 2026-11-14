@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -114,56 +115,83 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             Text = string.Join('\n', texts),
             Delivery = SessionInboxDelivery.Queue,
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await foreach (var update in ReadTurnAsync(events, typedSession, promptId, cancellationToken).ConfigureAwait(false))
+        {
+            yield return update;
+        }
+    }
+
+    private async IAsyncEnumerable<AgentResponseUpdate> ReadTurnAsync(
+        IAsyncEnumerator<IEvent> events, OpenCodeAgentSession session, string promptId,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var mapper = new TurnEventMapper(Id, promptId);
         var delivered = false;
-        while (await events.MoveNextAsync().ConfigureAwait(false))
+        var ended = false;
+        ExceptionDispatchInfo? failure = null;
+        while (!ended)
         {
-            var current = events.Current;
-            var eventSessionId = current switch
+            AgentResponseUpdate? update;
+            try
             {
-                ISessionScopedEvent scoped => scoped.SessionId,
-                FormCreated created => created.Data.Form.SessionId,
-                FormReplied replied => replied.Data.SessionId,
-                FormCancelled cancelled => cancelled.Data.SessionId,
-                UnknownEvent unknown when unknown.Payload.TryGetProperty("data", out var data)
-                    && data.ValueKind == JsonValueKind.Object
-                    && data.TryGetProperty("sessionID", out var id)
-                    && id.ValueKind == JsonValueKind.String => id.GetString(),
-                _ => null,
-            };
-            if (eventSessionId is not null && eventSessionId != typedSession.SessionId)
+                if (!await events.MoveNextAsync().ConfigureAwait(false))
+                {
+                    break;
+                }
+
+                var current = events.Current;
+                var eventSessionId = current switch
+                {
+                    ISessionScopedEvent scoped => scoped.SessionId,
+                    FormCreated created => created.Data.Form.SessionId,
+                    FormReplied replied => replied.Data.SessionId,
+                    FormCancelled cancelled => cancelled.Data.SessionId,
+                    UnknownEvent unknown when unknown.Payload.TryGetProperty("data", out var data)
+                        && data.ValueKind == JsonValueKind.Object
+                        && data.TryGetProperty("sessionID", out var id)
+                        && id.ValueKind == JsonValueKind.String => id.GetString(),
+                    _ => null,
+                };
+                if (eventSessionId is not null && eventSessionId != session.SessionId)
+                {
+                    continue;
+                }
+
+                delivered |= current is SessionInboxDelivered delivery && delivery.Data.InboxId == promptId;
+                if (!delivered)
+                {
+                    continue;
+                }
+
+                update = mapper.Map(current);
+                ended = eventSessionId == session.SessionId && TurnOutcome.EndsTurn(current);
+                if (ended && TurnOutcome.Failure(current) is { } turnFailure)
+                {
+                    failure = ExceptionDispatchInfo.Capture(turnFailure);
+                }
+            }
+            catch (Exception error) when (error is not OperationCanceledException cancelled || cancelled.CancellationToken != cancellationToken)
             {
-                continue;
+                failure = ExceptionDispatchInfo.Capture(error);
+                break;
             }
 
-            delivered |= current is SessionInboxDelivered delivery && delivery.Data.InboxId == promptId;
-            if (!delivered)
-            {
-                continue;
-            }
-
-            if (mapper.Map(current) is { } update)
+            if (update is not null)
             {
                 yield return update;
             }
-
-            if (eventSessionId == typedSession.SessionId && TurnOutcome.EndsTurn(current))
-            {
-                foreach (var closingResult in mapper.CloseOpenCalls())
-                {
-                    yield return closingResult;
-                }
-
-                if (TurnOutcome.Failure(current) is { } failure)
-                {
-                    throw failure;
-                }
-
-                yield break;
-            }
         }
 
-        throw new InvalidOperationException("The event stream ended before the turn ended.");
+        foreach (var closingResult in mapper.CloseOpenCalls())
+        {
+            yield return closingResult;
+        }
+
+        failure?.Throw();
+        if (!ended)
+        {
+            throw new InvalidOperationException("The event stream ended before the turn ended.");
+        }
     }
 
     /// <inheritdoc/>

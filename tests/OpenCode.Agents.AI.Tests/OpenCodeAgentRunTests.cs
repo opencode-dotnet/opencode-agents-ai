@@ -368,6 +368,48 @@ public sealed class OpenCodeAgentRunTests
         await Assert.That(last.Role).IsEqualTo(ChatRole.Tool);
     }
 
+    [Test]
+    public async Task RunStreamingAsync_Should_Close_Open_Tool_Calls_Before_A_Bus_Failure()
+    {
+        var failure = new OpenCodeTransportException("bus failed with an open call");
+        _fake.OnPrompt(request => OpenCallBeforeBusEnds(request, () => _fake.FailBus(failure)));
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await Assert.ThrowsAsync<OpenCodeTransportException>(async () => await UpdatesAsync(agent, updates));
+
+        await Assert.That(error).IsSameReferenceAs(failure);
+        var last = updates[^1];
+        var result = await Assert.That(last.Contents.Single()).IsTypeOf<FunctionResultContent>();
+        await Assert.That(result?.CallId).IsEqualTo("c1");
+        await Assert.That(result?.Result).IsEqualTo("Tool execution interrupted: shell");
+        await Assert.That(last.Role).IsEqualTo(ChatRole.Tool);
+        await Assert.That(updates.SelectMany(update => update.Contents).OfType<FunctionResultContent>().Select(content => content.CallId))
+            .IsEquivalentTo(["c1"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task RunStreamingAsync_Should_Close_Open_Tool_Calls_When_The_Stream_Ends_Early()
+    {
+        _fake.OnPrompt(request => OpenCallBeforeBusEnds(request, _fake.EndBus));
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await UpdatesAsync(agent, updates));
+
+        await Assert.That(error?.Message).IsEqualTo("The event stream ended before the turn ended.");
+        (ChatRole? Role, Type Content)[] expected =
+        [
+            (ChatRole.Assistant, typeof(AIContent)), (ChatRole.Assistant, typeof(AIContent)),
+            (ChatRole.Assistant, typeof(FunctionCallContent)), (ChatRole.Tool, typeof(FunctionResultContent)),
+        ];
+        await Assert.That(updates.SelectMany(update => update.Contents.Select(content => (update.Role, content.GetType()))))
+            .IsEquivalentTo(expected, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        var result = (FunctionResultContent)updates[^1].Contents.Single();
+        await Assert.That(result.CallId).IsEqualTo("c1");
+        await Assert.That(result.Result).IsEqualTo("Tool execution interrupted: shell");
+    }
+
     /// <summary>Runs a turn whose delivery is followed by <paramref name="interposed"/>, then Text("a") and its own success, and returns the run's text.</summary>
     private async Task<string> TextAfterAsync(IEvent interposed)
     {
@@ -387,15 +429,23 @@ public sealed class OpenCodeAgentRunTests
     private SessionPromptRequest PromptRequest() =>
         (SessionPromptRequest)_fake.Session.ReceivedCalls().Single(call => call.GetMethodInfo().Name == nameof(SessionClient.PromptAsync)).GetArguments()[0]!;
 
-    private static async Task<List<AgentResponseUpdate>> UpdatesAsync(OpenCodeAgent agent)
+    private static async Task<List<AgentResponseUpdate>> UpdatesAsync(OpenCodeAgent agent, List<AgentResponseUpdate>? updates = null)
     {
-        var updates = new List<AgentResponseUpdate>();
+        updates ??= [];
         await foreach (var update in agent.RunStreamingAsync("hello"))
         {
             updates.Add(update);
         }
 
         return updates;
+    }
+
+    private static IEnumerable<IEvent> OpenCallBeforeBusEnds(SessionPromptRequest request, Action endBus)
+    {
+        yield return TurnEvents.Delivered(request.Id.Value!);
+        yield return TurnEvents.ToolStarted("c1", "shell");
+        yield return TurnEvents.ToolCalled("c1", new Dictionary<string, JsonElement>(StringComparer.Ordinal));
+        endBus();
     }
 
     private static async IAsyncEnumerable<IEvent> NonConnectedBus()
