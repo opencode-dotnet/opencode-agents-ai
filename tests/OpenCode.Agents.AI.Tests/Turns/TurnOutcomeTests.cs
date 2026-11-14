@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using OpenCode.Agents.AI.Tests.Support;
 using OpenCode.Agents.AI.Turns;
 using OpenCode.Sdk.Models;
@@ -60,4 +61,56 @@ public sealed class TurnOutcomeTests
 
         await Assert.That(failure).IsNull();
     }
+
+    [Test]
+    public async Task Failure_Should_Throw_For_A_Drifted_Failed_Turn_End()
+    {
+        var turnEnd = DriftedEnd("session.execution.failed", new JsonObject
+        {
+            ["error"] = new JsonObject { ["message"] = "drifted model failure" },
+        });
+
+        var failure = TurnOutcome.Failure(turnEnd);
+
+        await Assert.That(failure).IsTypeOf<InvalidOperationException>();
+        await Assert.That(failure?.Message).IsEqualTo("Session error: drifted model failure");
+    }
+
+    [Test]
+    public async Task Failure_Should_Use_The_Fallback_Message_When_A_Drifted_Failure_Has_No_Message()
+    {
+        var turnEnd = DriftedEnd("session.execution.failed", new JsonObject { ["error"] = new JsonObject() });
+
+        var failure = TurnOutcome.Failure(turnEnd);
+
+        await Assert.That(failure).IsTypeOf<InvalidOperationException>();
+        await Assert.That(failure?.Message).IsEqualTo("Session error: the turn failed.");
+    }
+
+    [Test]
+    public async Task Failure_Should_Throw_For_A_Drifted_Shutdown_Interruption()
+    {
+        var turnEnd = DriftedEnd("session.execution.interrupted", new JsonObject { ["reason"] = "shutdown" });
+
+        var failure = TurnOutcome.Failure(turnEnd);
+
+        await Assert.That(failure).IsTypeOf<InvalidOperationException>();
+        await Assert.That(failure?.Message).IsEqualTo("Session error: the OpenCode server is shutting down");
+    }
+
+    [Test]
+    public async Task Failure_Should_End_Normally_For_A_Drifted_User_Interruption()
+    {
+        var turnEnd = DriftedEnd("session.execution.interrupted", new JsonObject { ["reason"] = "user" });
+
+        var failure = TurnOutcome.Failure(turnEnd);
+
+        await Assert.That(failure).IsNull();
+    }
+
+    private static UnknownEvent DriftedEnd(string type, JsonObject data) => new(type, JsonSerializer.SerializeToElement(new JsonObject
+    {
+        ["type"] = type,
+        ["data"] = data,
+    }));
 }

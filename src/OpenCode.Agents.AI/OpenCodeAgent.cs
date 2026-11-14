@@ -122,6 +122,9 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             var eventSessionId = current switch
             {
                 ISessionScopedEvent scoped => scoped.SessionId,
+                FormCreated created => created.Data.Form.SessionId,
+                FormReplied replied => replied.Data.SessionId,
+                FormCancelled cancelled => cancelled.Data.SessionId,
                 UnknownEvent unknown when unknown.Payload.TryGetProperty("data", out var data)
                     && data.ValueKind == JsonValueKind.Object
                     && data.TryGetProperty("sessionID", out var id)
@@ -144,7 +147,7 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
                 yield return update;
             }
 
-            if (TurnOutcome.EndsTurn(current))
+            if (eventSessionId == typedSession.SessionId && TurnOutcome.EndsTurn(current))
             {
                 if (TurnOutcome.Failure(current) is { } failure)
                 {

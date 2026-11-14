@@ -82,6 +82,8 @@ internal sealed class FakeOpenCode
 
     public void EndBus() => _bus.Writer.TryComplete();
 
+    public void FailBus(Exception failure) => _bus.Writer.TryComplete(failure);
+
     private static string PromptId(SessionPromptRequest request) =>
         request.Id.Value ?? throw new InvalidOperationException("The prompt must provide its id.");
 }

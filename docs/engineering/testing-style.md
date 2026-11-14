@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-06
+Date: 2026-11-14
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in

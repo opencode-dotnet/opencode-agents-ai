@@ -131,6 +131,43 @@ public sealed class OpenCodeAgentRunTests
     }
 
     [Test]
+    public async Task RunAsync_Should_Not_End_On_A_Turn_End_Without_A_Session()
+    {
+        const string type = "session.execution.succeeded";
+        var unscopedEnd = new UnknownEvent(type, JsonSerializer.SerializeToElement(new JsonObject { ["type"] = type }));
+        _fake.OnPrompt(request => [TurnEvents.Delivered(request.Id.Value!), unscopedEnd, TurnEvents.Text("a"), TurnEvents.Succeeded()]);
+        await using var agent = new OpenCodeAgent(_fake.Client);
+
+        var response = await agent.RunAsync("hello");
+
+        await Assert.That(response.Text).IsEqualTo("a");
+    }
+
+    [Test]
+    [Arguments("created")]
+    [Arguments("replied")]
+    [Arguments("cancelled")]
+    public async Task RunAsync_Should_Ignore_Forms_Of_Other_Sessions(string type)
+    {
+        var form = OtherSessionForm(type);
+        var text = TurnEvents.Text("ours");
+        var end = TurnEvents.Succeeded();
+        IEvent? delivered = null;
+        _fake.OnPrompt(request =>
+        {
+            delivered = TurnEvents.Delivered(request.Id.Value!);
+            return [delivered, form, text, end];
+        });
+        await using var agent = new OpenCodeAgent(_fake.Client);
+
+        var updates = await UpdatesAsync(agent);
+
+        await Assert.That(delivered).IsNotNull();
+        await Assert.That(updates.SelectMany(update => update.Contents).Select(content => content.RawRepresentation))
+            .IsEquivalentTo(new object?[] { delivered, text, end }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+    }
+
+    [Test]
     public async Task RunStreamingAsync_Should_Map_Reasoning_To_Reasoning_Content()
     {
         var reasoning = TurnEvents.Reasoning("thinking");
@@ -258,6 +295,59 @@ public sealed class OpenCodeAgentRunTests
     }
 
     [Test]
+    public async Task RunAsync_Should_Surface_The_Bus_Failure_After_The_Text_Before_It()
+    {
+        var failure = new OpenCodeTransportException("bus failed");
+        _fake.OnPrompt(request => FailBeforeTurn(request, failure));
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        var texts = new List<string>();
+
+        var error = await Assert.ThrowsAsync<OpenCodeTransportException>(async () =>
+        {
+            await foreach (var update in agent.RunStreamingAsync("hello"))
+            {
+                texts.AddRange(update.Contents.OfType<TextContent>().Select(content => content.Text));
+            }
+        });
+
+        await Assert.That(texts).IsEquivalentTo(["a"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(error).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task RunStreamingAsync_Should_Close_The_Bus_When_The_Caller_Stops_Early()
+    {
+        IEvent? firstEvent = null;
+        _fake.OnPrompt(request =>
+        {
+            firstEvent = TurnEvents.Delivered(request.Id.Value!);
+            _fake.Emit(firstEvent);
+            _fake.Emit(TurnEvents.Text("a"));
+            _fake.Emit(TurnEvents.Succeeded());
+            _fake.EndBus();
+            return [];
+        });
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        var updates = new List<AgentResponseUpdate>();
+
+        await foreach (var update in agent.RunStreamingAsync("hello"))
+        {
+            updates.Add(update);
+            if (ReferenceEquals(update.Contents.Single().RawRepresentation, firstEvent))
+            {
+                break;
+            }
+        }
+
+        await Assert.That(updates.Count).IsEqualTo(1);
+        await Assert.That(firstEvent).IsNotNull();
+        await Assert.That(updates[0].Contents.Single().RawRepresentation).IsSameReferenceAs(firstEvent);
+        var call = _fake.Client.Events.ReceivedCalls().Single(item => item.GetMethodInfo().Name == nameof(EventsClient.SubscribeAsync));
+        var token = (CancellationToken)call.GetArguments()[2]!;
+        await Assert.That(token.IsCancellationRequested).IsTrue();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task RunAsync_Should_Send_No_Prompt_When_The_Messages_Hold_No_Text(bool emptyMessage)
@@ -298,4 +388,42 @@ public sealed class OpenCodeAgentRunTests
         yield return TurnEvents.Text("a");
         _fake.EndBus();
     }
+
+    private IEnumerable<IEvent> FailBeforeTurn(SessionPromptRequest request, Exception failure)
+    {
+        yield return TurnEvents.Delivered(request.Id.Value!);
+        yield return TurnEvents.Text("a");
+        _fake.FailBus(failure);
+    }
+
+    private static IEvent OtherSessionForm(string type) => type switch
+    {
+        "created" => new FormCreated
+        {
+            Id = "form_created",
+            Created = 1,
+            Data = new FormCreatedData
+            {
+                Form = new FormInfo { Id = "form_test", SessionId = "ses_other", Title = "Other session", Fields = [] },
+            },
+        },
+        "replied" => new FormReplied
+        {
+            Id = "form_replied",
+            Created = 1,
+            Data = new FormRepliedData
+            {
+                Id = "form_test",
+                SessionId = "ses_other",
+                Answer = new Dictionary<string, FormValue>(StringComparer.Ordinal),
+            },
+        },
+        "cancelled" => new FormCancelled
+        {
+            Id = "form_cancelled",
+            Created = 1,
+            Data = new FormCancelledData { Id = "form_test", SessionId = "ses_other" },
+        },
+        _ => throw new ArgumentException("Unknown test form type.", nameof(type)),
+    };
 }

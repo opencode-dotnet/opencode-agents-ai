@@ -23,9 +23,9 @@ internal sealed class EventPump : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _lifetime.CancelOnWorkerAsync().ConfigureAwait(false);
         try
         {
+            await _lifetime.CancelOnWorkerAsync().ConfigureAwait(false);
             await _read.ConfigureAwait(false);
         }
         finally
