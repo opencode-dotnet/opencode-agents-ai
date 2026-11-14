@@ -1,6 +1,6 @@
 # Roadmap
 
-Date: 2026-11-06
+Date: 2026-11-14
 
 Operational state: what exists today, what is queued next, what is still open, and what is known to
 be incomplete. This file is a summary and shrinks as work lands. `../AGENTS.md` routes to the
@@ -14,7 +14,8 @@ as GitHub Issues in this repository; there is no project board. No date is promi
 The canon, build backbone and CI workflows exist: the empty library, public API baseline on every
 shipped asset, analyzer wall, format gates, Slopwatch, package validation, three-OS CI with its
 `CI result` check, dependency review and contribution files. Everything lands on `master` through
-the merge queue, which requires `CI result`. No provider behavior exists yet; the spike is next.
+the merge queue, which requires `CI result`. No provider behavior exists yet; the first version is
+next.
 
 ## Bootstrap, in order
 
@@ -24,8 +25,10 @@ the merge queue, which requires `CI result`. No provider behavior exists yet; th
    the analyzer wall, the format gates, Slopwatch and package validation.
 4. **CI** - done: the CI workflow with its `CI result` check, dependency review, contribution files,
    and the merge queue and branch protection on `master` (`engineering/workflow.md`).
-5. **Spike** - `OpenCodeAgent` non-streaming, then streaming; a workflow with a deterministic .NET
-   executor between two OpenCode agents; checkpoint and reconnect.
+5. **First version** - `OpenCodeAgent`, non-streaming and streaming, with reconnect, and its
+   tests; the review-loop example app: a workflow with a deterministic .NET executor between two
+   OpenCode agents, with checkpoints. Its last step is one recorded proof run against a real
+   OpenCode server.
 6. **Own use** - one real loop run with the product: implement, gate, review, fix-up.
 
 ## Later
@@ -42,5 +45,5 @@ the merge queue, which requires `CI result`. No provider behavior exists yet; th
 
 - **No provider behavior yet.** The library's public surface is empty; the build backbone and local
   check in `engineering/quality-gates.md` are in place.
-- **No clone gate yet.** It is deferred to the spike, no later than its first pull request that
-  adds hand-written production or test code.
+- **No clone gate yet.** It is deferred to the first version, no later than its first pull
+  request that adds hand-written production or test code.

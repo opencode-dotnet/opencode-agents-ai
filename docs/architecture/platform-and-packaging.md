@@ -1,6 +1,6 @@
 # Platform and Packaging Architecture
 
-Date: 2026-11-06
+Date: 2026-11-14
 
 Canonical current rules for product identity, projects, the build toolchain, dependencies,
 versioning, NuGet packaging, and licensing. The agent boundary lives in `agent-integration.md`.
@@ -26,6 +26,10 @@ prefix for an unrelated owner.
 | `tests/OpenCode.Agents.AI.Tests` | Product tests, including the public API baseline |
 
 The test project is not a package artifact.
+
+A project under `playground/` is a consumer example. It references the library by project
+reference, follows the library's quality rules, is never packed, and nothing under `src/` depends
+on it.
 
 A folder, helper, or project is created only for a consumer: there is no shared test library,
 benchmark project, or generator without one.

@@ -15,7 +15,7 @@ thin library adapter over the published OpenCode .NET SDK, intended for the NuGe
 **Pre-release bootstrap. Nothing is installable yet, and no package is published.**
 
 [`docs/ROADMAP.md`](docs/ROADMAP.md) has the current state and what comes next. Usage arrives with
-the spike.
+the first version.
 
 ## Developing
 
