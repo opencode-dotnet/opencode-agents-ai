@@ -149,6 +149,11 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
 
             if (eventSessionId == typedSession.SessionId && TurnOutcome.EndsTurn(current))
             {
+                foreach (var closingResult in mapper.CloseOpenCalls())
+                {
+                    yield return closingResult;
+                }
+
                 if (TurnOutcome.Failure(current) is { } failure)
                 {
                     throw failure;

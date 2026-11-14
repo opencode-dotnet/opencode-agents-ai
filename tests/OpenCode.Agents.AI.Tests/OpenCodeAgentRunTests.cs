@@ -348,6 +348,26 @@ public sealed class OpenCodeAgentRunTests
         await _fake.Session.DidNotReceive().PromptAsync(Arg.Any<SessionPromptRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
     }
 
+    [Test]
+    public async Task RunStreamingAsync_Should_Close_Open_Tool_Calls_Before_The_Run_Ends()
+    {
+        _fake.OnPrompt(request =>
+        [
+            TurnEvents.Delivered(request.Id.Value!), TurnEvents.ToolStarted("c1", "shell"),
+            TurnEvents.ToolCalled("c1", new Dictionary<string, JsonElement>(StringComparer.Ordinal)),
+            TurnEvents.Interrupted(SessionExecutionInterruptedDataReason.User),
+        ]);
+        await using var agent = new OpenCodeAgent(_fake.Client);
+
+        var updates = await UpdatesAsync(agent);
+
+        var last = updates[^1];
+        var content = (await Assert.That(last.Contents.Single()).IsTypeOf<FunctionResultContent>())!; // The type assertion proves this is non-null.
+        await Assert.That(content.CallId).IsEqualTo("c1");
+        await Assert.That(content.Result).IsEqualTo("Tool execution interrupted: shell");
+        await Assert.That(last.Role).IsEqualTo(ChatRole.Tool);
+    }
+
     /// <summary>Runs a turn whose delivery is followed by <paramref name="interposed"/>, then Text("a") and its own success, and returns the run's text.</summary>
     private async Task<string> TextAfterAsync(IEvent interposed)
     {

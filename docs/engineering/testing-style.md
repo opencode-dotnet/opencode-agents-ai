@@ -226,6 +226,7 @@ This product's critical rules:
 
 - A session with an id is continued, not created again.
 - A run ends only on the three turn-end events.
+- A tool result closes its call.
 
 Mutation-tool scores are advisory. A tool that compiles mutants without the analyzer wall reports
 kills that the real build would reject, so its results are replayed through the full build before
