@@ -246,22 +246,23 @@ failing, so the detector's tests prove that each pattern takes effect in a real 
 entry that matches no clone fails the gate like a new clone does.
 
 The lint job runs `dotnet run --file tools/opencode-tool.cs -- verify-clones`: the pinned jscpd in
-`tools/jscpd/`, installed with the machine's Bun from its own lockfile, at a 50-token minimum over three
-scopes. Hand-written `src/`, `tools/` and `tests/` are gated against the committed baselines in
-`tools/jscpd/`: a clone a baseline does not hold fails the job, `tools/` also fails above 3%
+`tools/jscpd/`, installed with the machine's Bun from its own lockfile, at a 50-token minimum over
+three scopes. Hand-written `src/`, `tools/` and `tests/` are gated against the committed baselines
+in `tools/jscpd/`: a clone a baseline does not hold fails the job, `tools/` also fails above 3%
 duplicated lines, and `tests/` above 5%. The tests ceiling is the measurement plus 0.25 points,
-rounded up to the next 0.5%, and it only ever falls: a change that removes test clones lowers it
-to that value when it is lower than the current ceiling. A failure names each new clone with its
-two `file:line` ranges and its size in tokens, and the job keeps the jscpd reports as an artifact. Locally the same command runs from the
-repository root once `bun install --frozen-lockfile --ignore-scripts` has run in `tools/jscpd/`, and the
-local check above runs it.
+rounded up to the next 0.5%, and it only ever falls: a change that removes test clones lowers it to
+that value when it is lower than the current ceiling. A failure names each new clone with its two
+`file:line` ranges and its size in tokens, and the job keeps the jscpd reports as an artifact.
+Locally the same command runs from the repository root once
+`bun install --frozen-lockfile --ignore-scripts` has run in `tools/jscpd/`, and the local check above
+runs it.
 
-`verify-clones --update-baseline` rewrites the baselines, mechanically. A pull request whose baseline
-gains a fingerprint or a higher count accounts for each gain in its body, the same way a new
-suppression is called out. A duplicate that existed before and that the change only moved, renamed
-or re-tokened maps to the old fingerprint it replaces, with the fragments' locations before and
-after. Any other gain is a new clone: the body names the reason it stays and the change that will
-remove it. A shrinking baseline needs no reason.
+`verify-clones --update-baseline` rewrites the baselines, mechanically. A pull request whose
+baseline gains a fingerprint or a higher count accounts for each gain in its body, the same way a
+new suppression is called out. A duplicate that existed before and that the change only moved,
+renamed or re-tokened maps to the old fingerprint it replaces, with the fragments' locations before
+and after. Any other gain is a new clone: the body names the reason it stays and the change that
+will remove it. A shrinking baseline needs no reason.
 
 ## Package compatibility
 

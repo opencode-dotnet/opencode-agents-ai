@@ -1,9 +1,9 @@
 namespace OpenCode.Agents.AI.Tools.Clones;
 
 /// <summary>
-/// One area the clone gate scans: its name, the repository-relative path it scans, which manifest
-/// side it leaves out, any further globs it ignores, the committed baseline that gates it (none for a
-/// scope that only reports), and the duplicated-lines percentage it may not exceed (none for no limit).
+/// One area the clone gate scans: its name, the repository-relative path it scans, any further globs
+/// it ignores, the committed baseline that gates it (none for a scope that only reports), and the
+/// duplicated-lines percentage it may not exceed (none for no limit).
 /// </summary>
 internal sealed record CloneScope(
     string Name,

@@ -10,8 +10,8 @@ namespace OpenCode.Agents.AI.Tools.Tests.Support;
 
 /// <summary>
 /// A repository on the filesystem double for the clone gate: the solution file, the installed
-/// detector, the generator's manifest with its generated and hand-written sources, the baselines,
-/// and one scripted detector run per scope that writes the report jscpd would write.
+/// detector, the baselines, and one scripted detector run per scope that writes the report jscpd
+/// would write.
 /// </summary>
 internal sealed class CloneScenario
 {

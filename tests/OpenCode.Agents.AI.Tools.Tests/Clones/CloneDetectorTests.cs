@@ -8,7 +8,7 @@ using TUnit.Assertions.Enums;
 
 namespace OpenCode.Agents.AI.Tools.Tests.Clones;
 
-/// <summary>How the detector runs one scope: the arguments each scope gets, the manifest split in its config, and the report it reads.</summary>
+/// <summary>How the detector runs one scope: the arguments each scope gets, its config, and the report it reads.</summary>
 public sealed class CloneDetectorTests
 {
     private const string Config = "work/scope.json";

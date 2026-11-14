@@ -53,8 +53,9 @@ These are the differences from the SDK:
 | 5 | `VerifyClonesCommand.SolutionFileName` and the test support's `RepositoryRoot.SolutionFileName` are `OpenCode.Agents.AI.slnx`; the command's description is "Run the pinned clone detector: hand-written src/, tools/ and tests/ against their baselines." | This repository's solution; no reported-only scope |
 | 6 | `Properties/AssemblyInfo.cs` names one friend, `OpenCode.Agents.AI.Tools.Tests`; the project file has no `AssemblyMetadata` item | No performance test project; only the generator's formatter reads that metadata |
 | 7 | `tools/jscpd/package.json`: name `opencode-agents-ai-clone-detector`, and a `packageManager` field that the Bun setup action reads | This repository has no `external/opencode` to read the Bun version from |
-| 8 | `ToolAppTests` raise their failures through the process-runner seam and run `verify-clones` | The SDK's tests use the `generate` command and its formatter seam, which are not copied |
-| 9 | The Bun setup action uses `oven-sh/setup-bun@v2`, the major tag this repository's action rule requires; the SDK pins a SHA. | Actions follow `../engineering/quality-gates.md` |
+| 8 | Three `ToolAppTests` (failure mapping, cancellation, global logging options) run `verify-clones` and raise their failures through the process-runner seam; the other four keep the SDK's own oracles | The SDK's tests use the `generate` command and its formatter seam, which are not copied |
+| 9 | The Bun setup action uses `oven-sh/setup-bun@v2`, the major tag this repository's action rule requires; the SDK pins a SHA | Actions follow `../engineering/quality-gates.md` |
+| 10 | Comments and the setup action's texts that describe the SDK's generator, manifest, submodule or pinned server are reworded to this repository's facts | Comments state the local status quo (`../engineering/documentation.md`) |
 
 ## .NET SDK
 

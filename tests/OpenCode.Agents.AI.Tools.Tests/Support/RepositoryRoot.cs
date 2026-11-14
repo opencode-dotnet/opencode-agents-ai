@@ -3,8 +3,8 @@ using System.IO.Abstractions;
 namespace OpenCode.Agents.AI.Tools.Tests.Support;
 
 /// <summary>
-/// Locates the repository root — the directory holding <c>OpenCode.slnx</c> — above the test
-/// output directory, for the tests that read committed repository files rather than fixtures.
+/// Locates the repository root — the directory holding <c>OpenCode.Agents.AI.slnx</c> — above the
+/// test output directory, for the tests that read committed repository files rather than fixtures.
 /// </summary>
 internal sealed class RepositoryRoot
 {

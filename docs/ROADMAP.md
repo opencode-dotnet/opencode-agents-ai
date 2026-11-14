@@ -45,5 +45,5 @@ next.
 
 - **No provider behavior yet.** The library's public surface is empty; the build backbone and local
   check in `engineering/quality-gates.md` are in place.
-- **Clone baselines pending.** The repository tool, tests and CI steps exist; the three baselines
-  are created after the first library source lands, before this branch goes to CI.
+- **Clone baselines pending.** The repository tool, its tests and the CI steps exist; the three
+  baselines are created with the first library source.

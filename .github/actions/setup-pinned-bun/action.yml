@@ -1,17 +1,17 @@
-# The pinned Bun, in the one place every job installs it from: the pinned server's runtime and the
-# clone detector's both read the pin's own packageManager row, so they cannot drift apart.
+# The pinned Bun, in the one place every job installs it from: the clone detector's own
+# packageManager row in tools/jscpd/package.json, which also holds its lockfile.
 #
-# Requires an already-checked-out repository with the external/opencode submodule initialized.
+# Requires an already-checked-out repository.
 name: "Setup pinned Bun"
-description: "Installs the Bun that the pinned server's packageManager row names, and verifies it."
+description: "Installs the Bun that tools/jscpd/package.json's packageManager row names, and verifies it."
 
 runs:
   using: "composite"
   steps:
-    - name: Setup Bun (pinned server runtime)
+    - name: Setup Bun (clone detector runtime)
       uses: oven-sh/setup-bun@v2
       with:
-        # The pin's own packageManager row (tools/jscpd/package.json).
+        # The clone detector's packageManager row.
         bun-version-file: tools/jscpd/package.json
 
     - name: Verify pinned Bun runtime

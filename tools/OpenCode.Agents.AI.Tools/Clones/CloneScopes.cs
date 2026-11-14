@@ -1,9 +1,9 @@
 namespace OpenCode.Agents.AI.Tools.Clones;
 
 /// <summary>
-/// The clone gate's fixed scopes. Hand-written SDK code, the tool and the tests are gated against
+/// The clone gate's fixed scopes. The library source, the tool and the tests are gated against
 /// committed baselines, the tool also against a 3% ceiling and the tests against a 5% ceiling that
-/// only falls; generated output is reported only, because an emitter's template repeats on purpose.
+/// only falls.
 /// </summary>
 internal static class CloneScopes
 {
