@@ -135,12 +135,7 @@ public sealed class OpenCodeAgentRunTests
     {
         const string type = "session.execution.succeeded";
         var unscopedEnd = new UnknownEvent(type, JsonSerializer.SerializeToElement(new JsonObject { ["type"] = type }));
-        _fake.OnPrompt(request => [TurnEvents.Delivered(request.Id.Value!), unscopedEnd, TurnEvents.Text("a"), TurnEvents.Succeeded()]);
-        await using var agent = new OpenCodeAgent(_fake.Client);
-
-        var response = await agent.RunAsync("hello");
-
-        await Assert.That(response.Text).IsEqualTo("a");
+        await Assert.That(await TextAfterAsync(unscopedEnd)).IsEqualTo("a");
     }
 
     [Test]
@@ -213,12 +208,7 @@ public sealed class OpenCodeAgentRunTests
     [Test]
     public async Task RunAsync_Should_Not_End_On_Server_Connected()
     {
-        _fake.OnPrompt(request => [TurnEvents.Delivered(request.Id.Value!), TurnEvents.Connected(), TurnEvents.Text("a"), TurnEvents.Succeeded()]);
-        await using var agent = new OpenCodeAgent(_fake.Client);
-
-        var response = await agent.RunAsync("hello");
-
-        await Assert.That(response.Text).IsEqualTo("a");
+        await Assert.That(await TextAfterAsync(TurnEvents.Connected())).IsEqualTo("a");
     }
 
     [Test]
@@ -278,9 +268,7 @@ public sealed class OpenCodeAgentRunTests
         var error = await Assert.ThrowsAsync<OpenCodeTransportException>(async () => await agent.RunAsync("hello"));
 
         await Assert.That(error).IsSameReferenceAs(failure);
-        var call = _fake.Client.Events.ReceivedCalls().Single(item => item.GetMethodInfo().Name == nameof(EventsClient.SubscribeAsync));
-        var token = (CancellationToken)call.GetArguments()[2]!;
-        await Assert.That(token.IsCancellationRequested).IsTrue();
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
     }
 
     [Test]
@@ -342,9 +330,7 @@ public sealed class OpenCodeAgentRunTests
         await Assert.That(updates.Count).IsEqualTo(1);
         await Assert.That(firstEvent).IsNotNull();
         await Assert.That(updates[0].Contents.Single().RawRepresentation).IsSameReferenceAs(firstEvent);
-        var call = _fake.Client.Events.ReceivedCalls().Single(item => item.GetMethodInfo().Name == nameof(EventsClient.SubscribeAsync));
-        var token = (CancellationToken)call.GetArguments()[2]!;
-        await Assert.That(token.IsCancellationRequested).IsTrue();
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
     }
 
     [Test]
@@ -360,6 +346,22 @@ public sealed class OpenCodeAgentRunTests
         await Assert.That(response.Messages).IsEmpty();
         await Assert.That(response.Text).IsEqualTo(string.Empty);
         await _fake.Session.DidNotReceive().PromptAsync(Arg.Any<SessionPromptRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>Runs a turn whose delivery is followed by <paramref name="interposed"/>, then Text("a") and its own success, and returns the run's text.</summary>
+    private async Task<string> TextAfterAsync(IEvent interposed)
+    {
+        _fake.OnPrompt(request => [TurnEvents.Delivered(request.Id.Value!), interposed, TurnEvents.Text("a"), TurnEvents.Succeeded()]);
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        var response = await agent.RunAsync("hello");
+        return response.Text;
+    }
+
+    /// <summary>Returns the token the pump passed to the bus subscription.</summary>
+    private CancellationToken SubscriptionToken()
+    {
+        var call = _fake.Client.Events.ReceivedCalls().Single(item => item.GetMethodInfo().Name == nameof(EventsClient.SubscribeAsync));
+        return (CancellationToken)call.GetArguments()[2]!;
     }
 
     private SessionPromptRequest PromptRequest() =>
