@@ -25,7 +25,7 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
             var response = await sessions.GetSessionClient(requestSessionId).GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             owned = response.Session.ParentId is { } parentId && await OwnsAsync(parentId, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (OpenCodeException)
         {
             owned = false;
         }
@@ -46,7 +46,8 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
         {
             try
             {
-                reply = await onPermissionRequest(request, cancellationToken).ConfigureAwait(false);
+                reply = await onPermissionRequest(request, cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException("The permission callback returned no reply.");
             }
             catch (Exception error)
             {

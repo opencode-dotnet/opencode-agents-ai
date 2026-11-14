@@ -383,6 +383,53 @@ public sealed class PermissionResponderTests
         await Assert.That(Replies(_fake.Session).Length).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task RespondAsync_Should_Propagate_Non_Sdk_Lookup_Failures_Without_Caching()
+    {
+        var child = _fake.AddSession("ses_child", FakeOpenCode.SessionId);
+        var failure = new ObjectDisposedException("session client");
+        child.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<SessionResponse>(failure));
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, onPermissionRequest: null);
+        var request = Request(sessionId: "ses_child");
+
+        var failures = new List<Exception?>();
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            failures.Add(await CaptureFailureAsync(() => responder.RespondAsync(request, CancellationToken.None).AsTask()));
+        }
+
+        await Assert.That(failures[0]).IsSameReferenceAs(failure);
+        await Assert.That(failures[1]).IsSameReferenceAs(failure);
+        await child.Received(2).GetAsync(null, CancellationToken.None);
+        await Assert.That(Replies(child)).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RespondAsync_Should_Reject_When_The_Callback_Returns_No_Reply(bool childSession)
+    {
+        var target = childSession ? _fake.AddSession("ses_child", FakeOpenCode.SessionId) : _fake.Session;
+        var request = Request(sessionId: childSession ? "ses_child" : FakeOpenCode.SessionId);
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId,
+            (_, _) => new ValueTask<SessionPermissionReplyRequest>((SessionPermissionReplyRequest)null!)); // Deliberately violates the callback's non-null contract.
+        using var cancellation = new CancellationTokenSource();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await responder.RespondAsync(request, cancellation.Token));
+
+        await Assert.That(error?.Message).IsEqualTo("The permission callback returned no reply.");
+        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Any<SessionPermissionReplyRequest>(), null, CancellationToken.None);
+        var call = Replies(target).Single();
+        var rejection = (SessionPermissionReplyRequest)call.GetArguments()[1]!; // The SDK signature requires a reply body.
+        await Assert.That(rejection.Decision).IsEqualTo(PermissionReply.Reject);
+        await Assert.That(rejection.Message.IsSet).IsFalse();
+        if (childSession)
+        {
+            await Assert.That(Replies(_fake.Session)).IsEmpty();
+        }
+    }
+
     private static PermissionRequest Request(string id = "per_1", string sessionId = FakeOpenCode.SessionId) => new()
     {
         Id = id,
