@@ -153,10 +153,20 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
+    permissions:
+      contents: read
+      checks: write
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2025, ubuntu-24.04, macos-15]
+        include:
+          - os: windows-2025
+            name: windows
+          - os: ubuntu-24.04
+            name: linux
+          - os: macos-15
+            name: macos
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -190,6 +200,62 @@ jobs:
           $ErrorActionPreference = 'Stop'
           dotnet test --solution OpenCode.Agents.AI.slnx --configuration Release --no-build --report-trx --results-directory artifacts/test-results --minimum-expected-tests 1 --timeout 25m --hangdump --hangdump-timeout 15m --hangdump-type Mini
           exit $LASTEXITCODE
+
+      - name: Publish test results
+        id: test-results
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        if: success() || failure()
+        # Allow fork PRs to fail gracefully (permission error) without breaking the workflow.
+        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        with:
+          name: "Test Results (${{ matrix.name }})"
+          # The merged TRX repeats the per-framework results; count only the originals.
+          path: "artifacts/test-results/*.trx"
+          reporter: dotnet-trx
+          path-replace-backslashes: true
+          fail-on-error: true
+
+      # Badge posting failure must not fail CI: the badgesmith.cs tool exits 0 on a failed post
+      # unless --fail-on-error is passed (which this action never does), and continue-on-error
+      # here is defense in depth against pre-flight validation failures. always() plus the
+      # ref/event guard mirrors badge-smith's own ci-cd.yml so a failing master run still posts
+      # the (failing) counts instead of leaving the badge stale.
+      # GitHub Actions treats any remote reference under .github/workflows/ as a REUSABLE
+      # WORKFLOW and refuses it inside steps ("reusable workflows should be referenced at the
+      # top-level jobs.*.uses key"), so the composite action cannot be consumed remotely from its
+      # current home. Until badge-smith relocates it (e.g. .github/actions/) and re-tags, we check
+      # the pinned tag out and consume the action through the local-path form badge-smith itself
+      # uses; the action is github.action_path-relative, so the relocated checkout is
+      # self-contained.
+      - name: Checkout BadgeSmith action
+        if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push'
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          repository: localstack-dotnet/badge-smith
+          # Pinned to the commit the live api.localstackfor.net deployment runs, keeping the
+          # signing tool and the server in lockstep. (The 2026-08-31 401s were ultimately a
+          # corrupted repository secret, not the tag - but deploy-aligned pinning stays the
+          # safer default until badge-smith tags releases in lockstep with its deployments.)
+          ref: bc7ed07860ec4b0e702add6370c2636daccb2adf
+          path: .badge-smith
+
+      - name: Update test badge via BadgeSmith API
+        if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push'
+        continue-on-error: true
+        uses: ./.badge-smith/.github/workflows/update-test-badge
+        with:
+          platform: ${{ matrix.name }}
+          test_passed: '${{ steps.test-results.outputs.passed || 0 }}'
+          test_failed: '${{ steps.test-results.outputs.failed || 0 }}'
+          test_skipped: '${{ steps.test-results.outputs.skipped || 0 }}'
+          test_url_html: ${{ steps.test-results.outputs.url_html || '' }}
+          commit_sha: '${{ github.sha }}'
+          run_id: '${{ github.run_id }}'
+          repository: '${{ github.repository }}'
+          server_url: '${{ github.server_url }}'
+          api_base_url: 'https://api.localstackfor.net'
+          hmac_secret: '${{ secrets.TESTDATASECRET }}'
 
       - name: List tests after failure
         if: ${{ failure() && !cancelled() && steps.build.outcome == 'success' && steps.test.outcome == 'failure' }}

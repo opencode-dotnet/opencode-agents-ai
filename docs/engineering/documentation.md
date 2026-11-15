@@ -1,6 +1,6 @@
 # Documentation
 
-Date: 2026-11-06
+Date: 2026-11-16
 
 Canonical rules for documentation ownership, authority, lifecycle, references, and lossless
 maintenance.
@@ -79,6 +79,13 @@ ships or a newer handoff supersedes them.
 
 `README.md` and `CHANGELOG.md` speak to .NET developers who compose MAF agents and workflows.
 
+- Every opencode-dotnet repository's README shows its status through BadgeSmith
+  (`api.localstackfor.net`): one test-result badge per CI operating system, and one nuget.org badge
+  and one GitHub Packages badge per published package once one is published, each with
+  `?prerelease=true` while its feed carries only prereleases. CI posts each operating system's test
+  counts from `master` pushes through BadgeSmith's pinned `update-test-badge` action, and a failed
+  post never fails CI; the workflow's comments own the mechanics. Each badge URL is checked live
+  before it is committed.
 - A change that alters what a consumer sees updates the README section that describes it, in the
   same pull request.
 - From the first package on, `CHANGELOG.md` gets an entry under `[Unreleased]` for every
