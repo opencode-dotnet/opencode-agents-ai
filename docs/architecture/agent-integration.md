@@ -160,8 +160,8 @@ registry id, and destroys retained shell output. Interrupt requests omit Resume 
 idle no-op. This partially mirrors `packages/cli/src/run/noninteractive.ts:262–275` at v2.3.0.
 
 The cleanup runs in at most four dependent stages: inbox cancel, job snapshot, root-location lookup,
-and the concurrent mutation group. Each stage is bounded only by the SDK's inactivity window
-(`NetworkTimeout`), which restarts on every bit of network progress (SDK 1.1.0
+then shell removal. The interrupts run alongside the lookup. Each stage is bounded only by the SDK's
+inactivity window (`NetworkTimeout`), which restarts on every bit of network progress (SDK 1.1.0
 `docs/guide/requests.md:209–210`). A server that stops responding delays caller cancellation by about
 four windows; a server that keeps answering slowly has no total bound. This is a known limit, not a
 wall-clock guarantee.
@@ -169,7 +169,9 @@ wall-clock guarantee.
 Every cleanup call uses `CancellationToken.None` so the already-cancelled caller token cannot
 prevent sending it. Each action tolerates only `OpenCodeException`, including the SDK's own
 inactivity-timeout `OpenCodeTransportException`, and proceeds independently. Such failures never
-replace the caller's cancellation. Cancellation tolerates them while permission-reply failures
+replace the caller's cancellation. Non-SDK cleanup failures still propagate and can replace the
+caller's cancellation, including `ObjectDisposedException` if the client is disposed during cleanup.
+Cancellation tolerates SDK failures while permission-reply failures
 surface because a lost reply blocks a session without a trace, whereas a failed cleanup leaves the
 caller already informed by cancellation. Independent local cleanup faults remain observable in
 their established order: the background waiter cancels and joins its idle/readiness operations

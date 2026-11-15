@@ -126,25 +126,46 @@ public sealed class RunCancellationTests
     }
 
     [Test]
-    [Arguments("interrupt:ses_test", false)]
-    [Arguments("interrupt:child", false)]
-    [Arguments("remove:shell_action@root-directory", false)]
-    [Arguments("interrupt:ses_test", true)]
-    [Arguments("interrupt:child", true)]
-    [Arguments("remove:shell_action@root-directory", true)]
-    public async Task CancelAsync_Should_Await_Every_Started_Action(string held, bool fails)
+    [Arguments("interrupt:ses_test", false, true)]
+    [Arguments("interrupt:child", false, true)]
+    [Arguments("remove:shell_action@root-directory", false, true)]
+    [Arguments("interrupt:ses_test", true, true)]
+    [Arguments("interrupt:child", true, true)]
+    [Arguments("remove:shell_action@root-directory", true, true)]
+    [Arguments("cancel-inbox:prompt", false, true)]
+    [Arguments("jobs", false, true)]
+    [Arguments("cancel-inbox:prompt", false, false)]
+    public async Task CancelAsync_Should_Await_Every_Started_Action(string held, bool fails, bool delivered)
     {
         var releases = new List<TaskCompletionSource<bool>>();
         ArrangeSweep(failure: fails ? held : null, held: held, releases: releases);
-        var result = DeliveredCancellation().CancelAsync();
+        var cancellation = new RunCancellation(_fake.Client, FakeOpenCode.SessionId, "prompt", 100);
+        if (delivered) { cancellation.MarkDelivered(); }
+        var result = cancellation.CancelAsync();
         try
         {
-            await AssertSelectedTraceAsync();
+            if (held == "cancel-inbox:prompt")
+            {
+                await Assert.That(_trace).IsEquivalentTo(["cancel-inbox:prompt"], CollectionOrdering.Matching);
+            }
+            else if (held == "jobs")
+            {
+                await Assert.That(_trace).IsEquivalentTo(["cancel-inbox:prompt", "jobs"], CollectionOrdering.Matching);
+            }
+            else
+            {
+                await AssertSelectedTraceAsync();
+                await Assert.That(_completed).DoesNotContain(held);
+            }
             await Assert.That(result.IsCompleted).IsFalse();
-            await Assert.That(_completed).DoesNotContain(held);
         }
         finally { foreach (var release in releases) { release.TrySetResult(true); } await result; }
-        await Assert.That(_completed).Contains(held);
+        if (held is "cancel-inbox:prompt" or "jobs")
+        {
+            if (delivered) { await AssertSelectedTraceAsync(); }
+            else { await Assert.That(_trace).IsEquivalentTo(["cancel-inbox:prompt"], CollectionOrdering.Matching); }
+        }
+        else { await Assert.That(_completed).Contains(held); }
     }
 
     [Test]
@@ -166,8 +187,12 @@ public sealed class RunCancellationTests
     private void ArrangeSweep(string? failure = null, string? held = null, List<TaskCompletionSource<bool>>? releases = null)
     {
         _fake.AddSession("owner", FakeOpenCode.SessionId, "owner-directory");
+        _fake.AddSession("old-child", FakeOpenCode.SessionId);
+        _fake.AddSession("child-job", FakeOpenCode.SessionId);
+        _fake.AddShell("registry-id");
+        _fake.AddShell("second-job");
         _fake.Session.CancelInboxAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
-            .Returns(call => RecordAsync("cancel-inbox:" + call.Arg<string>(), new SessionInboxCancelResponse { Status = 204 }, failure));
+            .Returns(call => RecordAsync("cancel-inbox:" + call.Arg<string>(), new SessionInboxCancelResponse { Status = 204 }, failure, held, releases));
         ArrangeInterrupt(_fake.Session, "ses_test", failure, held, releases);
         ArrangeInterrupt(_fake.AddSession("child", FakeOpenCode.SessionId), "child", failure, held, releases);
         _fake.Session.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
@@ -187,7 +212,7 @@ public sealed class RunCancellationTests
                     TurnEvents.SubagentJob("child-job", "owner", "child", 101, JobStatus.Cancelled),
                     TurnEvents.ImageJob("image", "owner", 100, JobStatus.Running), TurnEvents.UnknownJob("future"),
                     TurnEvents.ShellJob("second-job", "owner", 102, JobStatus.Error) with { ShellId = "second_shell" }],
-            }, failure));
+            }, failure, held, releases));
 #pragma warning restore OPENCODE001 // ExperimentalClient.ListJobsAsync, ExperimentalJobListResponse, JobStatus, JobSubagent, JobShell, JobImage and UnknownJobInfo arrangement ends here.
     }
 
@@ -200,6 +225,9 @@ public sealed class RunCancellationTests
 
     private async Task AssertSelectedTraceAsync()
     {
+        _fake.Sessions.DidNotReceive().GetSessionClient("old-child");
+        _fake.Sessions.DidNotReceive().GetSessionClient("child-job");
+        _fake.Shells.DidNotReceive().GetShellClient("registry-id");
         await Assert.That(_trace.Take(2)).IsEquivalentTo(["cancel-inbox:prompt", "jobs"], CollectionOrdering.Matching);
         await Assert.That(_trace.Skip(2)).IsEquivalentTo(SelectedMutations);
     }
@@ -211,13 +239,14 @@ public sealed class RunCancellationTests
     private async Task<T> RecordAsync<T>(string action, T response, string? failure, string? held = null, List<TaskCompletionSource<bool>>? releases = null)
     {
         _trace.Enqueue(action);
-        if (held == action || held == "mutations")
+        var mutation = action.StartsWith("interrupt:", StringComparison.Ordinal) || action.StartsWith("remove:", StringComparison.Ordinal);
+        if (held == action || (held == "mutations" && mutation))
         {
             var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             (releases ?? throw new InvalidOperationException("A held action requires a release owner.")).Add(release);
             await release.Task;
         }
-        if (action.StartsWith("interrupt:", StringComparison.Ordinal) || action.StartsWith("remove:", StringComparison.Ordinal)) { _completed.Enqueue(action); }
+        if (mutation) { _completed.Enqueue(action); }
         if (action == failure) { throw new OpenCodeTransportException("cleanup timed out: " + action); }
         return response;
     }

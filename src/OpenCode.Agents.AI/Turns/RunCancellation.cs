@@ -23,7 +23,7 @@ internal sealed class RunCancellation(OpenCodeClient client, string sessionId, s
             Descendants = true,
         }, cancellationToken: CancellationToken.None)).ConfigureAwait(false);
 #pragma warning restore OPENCODE001 // OpenCodeClient.Experimental, ExperimentalClient, ExperimentalJobListRequest and ExperimentalJobListResponse snapshot ends here.
-        var actions = new List<Task> { AttemptAsync(() => root.InterruptAsync(cancellationToken: CancellationToken.None)) };
+        var children = new List<string>();
         var shells = new List<string>();
 #pragma warning disable OPENCODE001 // ExperimentalJobListResponse, IJobInfo, JobTime, JobSubagent and JobShell select actionable admission-time descendants.
         if (snapshot is not null)
@@ -33,7 +33,7 @@ internal sealed class RunCancellation(OpenCodeClient client, string sessionId, s
                 switch (job)
                 {
                     case JobSubagent child when child.Time.Started >= admittedAt:
-                        actions.Add(AttemptAsync(() => client.Sessions.GetSessionClient(child.ChildSessionId).InterruptAsync(cancellationToken: CancellationToken.None)));
+                        children.Add(child.ChildSessionId);
                         break;
                     case JobShell shell when shell.Time.Started >= admittedAt:
                         shells.Add(shell.ShellId);
@@ -42,6 +42,11 @@ internal sealed class RunCancellation(OpenCodeClient client, string sessionId, s
             }
         }
 #pragma warning restore OPENCODE001 // ExperimentalJobListResponse, IJobInfo, JobTime, JobSubagent and JobShell selection ends here.
+        var actions = new List<Task> { AttemptAsync(() => root.InterruptAsync(cancellationToken: CancellationToken.None)) };
+        foreach (var childId in children)
+        {
+            actions.Add(AttemptAsync(() => client.Sessions.GetSessionClient(childId).InterruptAsync(cancellationToken: CancellationToken.None)));
+        }
         if (shells.Count != 0) { actions.Add(RemoveShellsAsync(shells)); }
         await Task.WhenAll(actions).ConfigureAwait(false);
     }
