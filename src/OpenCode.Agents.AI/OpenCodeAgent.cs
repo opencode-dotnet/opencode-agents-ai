@@ -111,16 +111,20 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
         }
 
         var promptId = $"msg_{Guid.NewGuid():N}";
-        await client.PromptAsync(new SessionPromptRequest
+        var admission = await client.PromptAsync(new SessionPromptRequest
         {
             Id = promptId,
             Text = string.Join('\n', texts),
             Delivery = SessionInboxDelivery.Queue,
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await permissions.ReconcileAsync(cancellationToken).ConfigureAwait(false);
         await foreach (var update in ReadTurnAsync(events, typedSession, promptId, permissions, cancellationToken).ConfigureAwait(false))
         {
             yield return update;
         }
+
+        await new BackgroundJobs(_client, typedSession.SessionId!, admission.Prompt.Time.Created, permissions) // Session admission has already assigned the id.
+            .WaitAsync(pump.Reader, cancellationToken).ConfigureAwait(false);
     }
 
     private async IAsyncEnumerable<AgentResponseUpdate> ReadTurnAsync(
@@ -144,7 +148,11 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
                 var current = events.Current;
                 if (current is PermissionAsked asked)
                 {
-                    await permissions.RespondAsync(PermissionRequest(asked), cancellationToken).ConfigureAwait(false);
+                    await permissions.RespondAsync(asked, cancellationToken).ConfigureAwait(false);
+                }
+                else if (current is SessionExecutionStarted started)
+                {
+                    permissions.OnExecutionStarted(started.Data.SessionId);
                 }
 
                 var eventSessionId = current switch
@@ -200,18 +208,6 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             throw new InvalidOperationException("The event stream ended before the turn ended.");
         }
     }
-
-    private static PermissionRequest PermissionRequest(PermissionAsked asked) => new()
-    {
-        Id = asked.Data.Id,
-        SessionId = asked.Data.SessionId,
-        Action = asked.Data.Action,
-        Resources = asked.Data.Resources,
-        Save = asked.Data.Save,
-        Metadata = asked.Data.Metadata,
-        Source = asked.Data.Source,
-        Message = asked.Data.Message,
-    };
 
     /// <inheritdoc/>
     protected override string? IdCore => _id;

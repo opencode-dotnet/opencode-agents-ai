@@ -485,6 +485,170 @@ public sealed class PermissionResponderTests
         }
     }
 
+    [Test]
+    public async Task ReconcileAsync_Should_Answer_The_Roots_Pending_Requests_In_Order()
+    {
+        var child = _fake.AddSession("ses_child", FakeOpenCode.SessionId);
+        var foreign = _fake.AddSession("ses_foreign", parentId: null);
+        var first = Request("per_z") with
+        {
+            Save = ["save_z", "save_a"],
+            Message = "Pending feedback",
+            Metadata = new Dictionary<string, JsonElement>(StringComparer.Ordinal) { ["audit"] = JsonSerializer.SerializeToElement(42) },
+        };
+        var second = Request("per_a");
+        _fake.PendingPermissions(FakeOpenCode.SessionId, [first, second]);
+        _fake.PendingPermissions("ses_child", [Request("per_child", "ses_child")]);
+        _fake.PendingPermissions("ses_foreign", [Request("per_foreign", "ses_foreign")]);
+        var received = new List<PermissionRequest>();
+        var reply = Reply("feedback");
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
+        {
+            received.Add(request);
+            return new(reply);
+        });
+
+        await responder.ReconcileAsync(CancellationToken.None);
+
+        await Assert.That(received.Select(request => request.Id)).IsEquivalentTo(["per_z", "per_a"], CollectionOrdering.Matching);
+        await Assert.That(received[0]).IsSameReferenceAs(first);
+        await Assert.That(received[1]).IsSameReferenceAs(second);
+        await Assert.That((received[0].SessionId, received[0].Action, received[0].Message)).IsEqualTo((FakeOpenCode.SessionId, "edit", "Pending feedback"));
+        await Assert.That(received[0].Resources).IsEquivalentTo(["file.cs"], CollectionOrdering.Matching);
+        await Assert.That(received[0].Save).IsEquivalentTo(["save_z", "save_a"], CollectionOrdering.Matching);
+        await Assert.That(received[0].Metadata?["audit"].GetInt32()).IsEqualTo(42);
+        await Assert.That(received[0].Source).IsSameReferenceAs(first.Source);
+        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["per_z", "per_a"], CollectionOrdering.Matching);
+        await _fake.Session.Received(1).ReplyToPermissionAsync("per_z", reply, OpenCodeRequestOptions.NoThrow, CancellationToken.None);
+        await _fake.Session.Received(1).ReplyToPermissionAsync("per_a", reply, OpenCodeRequestOptions.NoThrow, CancellationToken.None);
+        await child.DidNotReceive().ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+        await foreign.DidNotReceive().ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReconcileAsync_Should_Answer_An_Id_Only_Once_Across_The_Event_Stream(bool snapshotFirst)
+    {
+        _fake.PendingPermissions(FakeOpenCode.SessionId, [Request("per_shared"), Request("per_new")]);
+        _fake.Session.ReplyToPermissionAsync("per_new", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(ReplyError("not-found", "per_new"));
+        var ids = new List<string>();
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
+        {
+            ids.Add(request.Id);
+            return new(new SessionPermissionReplyRequest { Decision = PermissionReply.Reject });
+        });
+        if (!snapshotFirst)
+        {
+            await responder.RespondAsync(TurnEvents.PermissionAsked("per_shared"), CancellationToken.None);
+        }
+
+        await responder.ReconcileAsync(CancellationToken.None);
+        await responder.RespondAsync(TurnEvents.PermissionAsked("per_shared"), CancellationToken.None);
+
+        await Assert.That(ids).IsEquivalentTo(["per_shared", "per_new"], CollectionOrdering.Matching);
+        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["per_shared", "per_new"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task ReconcileAsync_Should_Surface_The_List_Failure_Without_Retrying()
+    {
+        var failure = new OpenCodeTransportException("snapshot failed");
+        _fake.Session.ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<SessionPermissionListResponse>(failure));
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, onPermissionRequest: null);
+
+        var error = await Assert.ThrowsAsync<OpenCodeTransportException>(async () => await responder.ReconcileAsync(CancellationToken.None));
+
+        await Assert.That(error).IsSameReferenceAs(failure);
+        await _fake.Session.Received(1).ListRequestsAsync(null, CancellationToken.None);
+        await Assert.That(Replies(_fake.Session)).IsEmpty();
+    }
+
+    [Test]
+    public async Task ReconcileAsync_Should_Apply_The_Selected_Not_Found_Policy()
+    {
+        _fake.PendingPermissions(FakeOpenCode.SessionId, [Request("per_missing"), Request("per_callback")]);
+        foreach (var id in new[] { "per_missing", "per_callback" })
+        {
+            _fake.Session.ReplyToPermissionAsync(id, Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(ReplyError("not-found", id));
+        }
+
+        var failure = new InvalidOperationException("handler failed");
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
+            request.Id == "per_callback" ? throw failure : new(Reply("absent")));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await responder.ReconcileAsync(CancellationToken.None));
+
+        await Assert.That(error).IsSameReferenceAs(failure);
+        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["per_missing", "per_callback"], CollectionOrdering.Matching);
+        var cleanup = Replies(_fake.Session)[1];
+        var reply = (SessionPermissionReplyRequest)cleanup.GetArguments()[1]!; // The SDK requires a reply body.
+        await Assert.That(reply.Decision).IsEqualTo(PermissionReply.Reject);
+        await Assert.That(reply.Message.Value).IsEqualTo("The permission handler failed, so this request was rejected.");
+        await Assert.That(cleanup.GetArguments()[3]).IsEqualTo(CancellationToken.None);
+    }
+
+    [Test]
+    [Arguments("absent", "reject", "success", true)]
+    [Arguments("null", "reject", "success", true)]
+    [Arguments("empty", "reject", "success", true)]
+    [Arguments("space", "reject", "success", false)]
+    [Arguments("feedback", "reject", "success", false)]
+    [Arguments("absent", "once", "success", false)]
+    [Arguments("absent", "always", "success", false)]
+    [Arguments("absent", "reject", "not-found", false)]
+    [Arguments("absent", "reject", "transport", false)]
+    [Arguments("absent", "reject", "cleanup", false)]
+    public async Task RespondAsync_Should_Record_Only_Accepted_Message_Less_Rejects(string message, string decision, string outcome, bool recorded)
+    {
+        var child = _fake.AddSession("ses_child", FakeOpenCode.SessionId);
+        var reply = Reply(message) with
+        {
+            Decision = decision switch { "reject" => PermissionReply.Reject, "always" => PermissionReply.Always, _ => PermissionReply.Once },
+            Message = message switch { "empty" => "", "space" => " ", _ => Reply(message).Message },
+        };
+        var failure = new OpenCodeTransportException("reply failed");
+        if (outcome == "transport")
+        {
+            FailReply(child, "per_child", failure);
+        }
+        else if (outcome == "not-found")
+        {
+            child.ReplyToPermissionAsync("per_child", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(ReplyError("not-found", "per_child"));
+        }
+
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId,
+            (_, _) => outcome == "cleanup" ? throw failure : new(reply));
+        await Assert.That(responder.HasRejectedWithoutMessage("ses_child")).IsFalse();
+        var error = await CaptureFailureAsync(() => responder.RespondAsync(Request("per_child", "ses_child"), CancellationToken.None).AsTask());
+
+        await Assert.That(responder.HasRejectedWithoutMessage("ses_child")).IsEqualTo(recorded);
+        await Assert.That(responder.HasRejectedWithoutMessage(FakeOpenCode.SessionId)).IsFalse();
+        await Assert.That(responder.HasRejectedWithoutMessage("ses_other")).IsFalse();
+        await Assert.That(ReplyIds(child)).IsEquivalentTo(["per_child"], CollectionOrdering.Matching);
+        if (outcome == "cleanup")
+        {
+            await Assert.That(((SessionPermissionReplyRequest)Replies(child)[0].GetArguments()[1]!).Message.Value).IsEqualTo(PermissionResponder.HandlerFailedMessage); // The SDK requires the reply body.
+        }
+        else
+        {
+            await Assert.That(Replies(child)[0].GetArguments()[1]).IsSameReferenceAs(reply);
+        }
+
+        if (outcome is "transport" or "cleanup")
+        {
+            await Assert.That(error).IsSameReferenceAs(failure);
+        }
+        else
+        {
+            await Assert.That(error).IsNull();
+        }
+    }
+
     private static PermissionRequest Request(string id = "per_1", string sessionId = FakeOpenCode.SessionId) => new()
     {
         Id = id,

@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using NSubstitute;
+using OpenCode.Agents.AI.Internal.Threading;
 using OpenCode.Agents.AI.Permissions;
 using OpenCode.Agents.AI.Tests.Support;
 using OpenCode.Sdk;
@@ -131,7 +132,7 @@ public sealed class OpenCodeAgentRunTests
         await agent.RunAsync("hello", session);
 
         await _fake.Sessions.DidNotReceive().CreateSessionAsync(Arg.Any<SessionCreateRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
-        _fake.Sessions.Received(1).GetSessionClient(FakeOpenCode.SessionId);
+        _fake.Sessions.Received().GetSessionClient(FakeOpenCode.SessionId);
         await Assert.That(((OpenCodeAgentSession)session).SessionId).IsEqualTo(FakeOpenCode.SessionId);
     }
 
@@ -474,6 +475,318 @@ public sealed class OpenCodeAgentRunTests
         var result = (FunctionResultContent)updates[^1].Contents.Single();
         await Assert.That(result.CallId).IsEqualTo("c1");
         await Assert.That(result.Result).IsEqualTo("Tool execution interrupted: shell");
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Reconcile_Permissions_After_Admission_Before_Delivery()
+    {
+        var trace = new List<string>();
+        var pending = TurnEvents.PendingPermission("per_pending");
+        _fake.PendingPermissions(FakeOpenCode.SessionId, [pending]);
+        _fake.Session.ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { trace.Add("list"); return new SessionPermissionListResponse { Status = 200, Requests = [pending] }; });
+        _fake.OnPrompt(prompt =>
+        {
+            trace.Add("admission");
+            return [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("done"), TurnEvents.Succeeded()];
+        });
+        var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+        _fake.Session.ReplyToPermissionAsync("per_pending", reply, Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { trace.Add("reply"); return new SessionPermissionReplyResponse { Status = 204 }; });
+#pragma warning disable OPENCODE001 // Observe the completion check after the original turn's mapped output.
+        _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { trace.Add("background check"); return new ExperimentalJobListResponse { Status = 200, Jobs = [] }; });
+#pragma warning restore OPENCODE001
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = (request, _) => { trace.Add("callback:" + request.Id); return new(reply); },
+        });
+
+        await foreach (var update in agent.RunStreamingAsync("hello"))
+        {
+            trace.Add(update.Contents.Single().RawRepresentation switch
+            {
+                SessionInboxDelivered => "mapped delivery",
+                SessionTextDelta => "text",
+                SessionExecutionSucceeded => "original end",
+                _ => "unexpected",
+            });
+        }
+
+        await Assert.That(trace).IsEquivalentTo(["admission", "list", "callback:per_pending", "reply", "mapped delivery", "text", "original end", "background check"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await _fake.Session.Received(1).ReplyToPermissionAsync("per_pending", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
+    }
+
+#pragma warning disable OPENCODE001 // The integration test observes entry into the SDK's background wait path.
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    public async Task RunAsync_Should_Wait_For_This_Prompts_Background_Work_And_Answer_Its_Late_Ask(bool noCallback, bool declinedBeforeEnd)
+    {
+        var child = _fake.AddSession("child", FakeOpenCode.SessionId);
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reply = new SessionPermissionReplyRequest { Decision = declinedBeforeEnd ? PermissionReply.Reject : PermissionReply.Once };
+        var originalText = TurnEvents.Text("original");
+        var originalEnd = TurnEvents.Succeeded();
+        IEvent? delivery = null;
+        _fake.OnPrompt(prompt =>
+        {
+            delivery = TurnEvents.Delivered(prompt.Id.Value!);
+            return declinedBeforeEnd
+                ? [delivery, TurnEvents.PermissionAsked("per_child", "child"), TurnEvents.Succeeded("child"), originalText, originalEnd]
+                : [delivery, originalText, originalEnd];
+        });
+        _fake.Jobs([TurnEvents.SubagentJob("job", FakeOpenCode.SessionId, "child", 100, JobStatus.Running)]);
+        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                entered.TrySetResult(true);
+                if (!declinedBeforeEnd) { _fake.Emit(TurnEvents.PermissionAsked("per_child", "child")); }
+                return new ExperimentalSessionWaitResponse { Status = 204 };
+            });
+        child.ReplyToPermissionAsync("per_child", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (!declinedBeforeEnd)
+                {
+                    _fake.Jobs([]);
+                    _fake.Emit(TurnEvents.Text("child output", "child"));
+                    _fake.Emit(TurnEvents.Text("wake output"));
+                    _fake.Emit(TurnEvents.Succeeded("child"));
+                }
+                return new SessionPermissionReplyResponse { Status = 204 };
+            });
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions { OnPermissionRequest = noCallback ? null : (_, _) => new(reply) });
+        var updates = new List<AgentResponseUpdate>();
+        var outcome = CaptureRunFailureAsync(agent, updates);
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, outcome)).IsSameReferenceAs(entered.Task);
+            await Assert.That(await outcome).IsNull();
+        }
+        finally
+        {
+            _fake.EndBus();
+            await outcome;
+        }
+
+        await Assert.That(updates.SelectMany(update => update.Contents).OfType<TextContent>().Select(content => content.Text)).IsEquivalentTo(["original"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(updates.SelectMany(update => update.Contents).Select(content => content.RawRepresentation)).IsEquivalentTo(new object?[] { delivery, originalText, originalEnd }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        var actual = (SessionPermissionReplyRequest)child.ReceivedCalls().Single(call => call.GetMethodInfo().Name == nameof(SessionClient.ReplyToPermissionAsync)).GetArguments()[1]!; // The SDK requires a reply body.
+        if (noCallback)
+        {
+            await Assert.That(actual.Decision).IsEqualTo(PermissionReply.Reject);
+            await Assert.That(actual.Message.Value).IsEqualTo(PermissionResponder.NoHandlerMessage);
+        }
+        else { await Assert.That(actual).IsSameReferenceAs(reply); }
+    }
+#pragma warning restore OPENCODE001
+
+#pragma warning disable OPENCODE001 // Admission time is a server field, not the local time when the turn ends.
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RunAsync_Should_Use_The_Admission_Time_Not_The_Turn_End_Time(bool restarted)
+    {
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releases = new List<TaskCompletionSource<bool>>();
+        _fake.AddSession("boundary", FakeOpenCode.SessionId);
+        _fake.AddSession("newer", FakeOpenCode.SessionId);
+        _fake.Jobs([
+            TurnEvents.SubagentJob("old", FakeOpenCode.SessionId, "old_child", 99, JobStatus.Running),
+            TurnEvents.SubagentJob("boundary", FakeOpenCode.SessionId, "boundary", 100, JobStatus.Running),
+            TurnEvents.SubagentJob("newer", FakeOpenCode.SessionId, "newer", 101, JobStatus.Running),
+        ]);
+        var trace = new List<string>();
+        foreach (var id in new[] { FakeOpenCode.SessionId, "boundary", "newer" })
+        {
+            _fake.Sessions.GetSessionClient(id).ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(_ => { trace.Add(id); return new SessionInboxListResponse { Status = 200, Inbox = [] }; });
+        }
+        _fake.OnPrompt(prompt =>
+        [
+            TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.PermissionAsked("boundary", "boundary"), TurnEvents.PermissionAsked("newer", "newer"),
+            TurnEvents.PermissionAsked("turn_gate"),
+            restarted ? new SessionExecutionStarted
+            {
+                Id = "started", Created = 101,
+                Durable = new SessionExecutionStartedDurable { AggregateId = "boundary", Seq = 1, Version = 1 },
+                Data = new SessionExecutionStartedData { SessionId = "boundary" },
+            } : TurnEvents.Succeeded("boundary"),
+            TurnEvents.Text("original"), TurnEvents.Succeeded(),
+        ], admittedAt: 100);
+        if (restarted)
+        {
+            _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(_ => { _fake.Emit(TurnEvents.PermissionAsked("checkpoint")); return new ExperimentalJobListResponse { Status = 200, Jobs = [TurnEvents.SubagentJob("boundary", FakeOpenCode.SessionId, "boundary", 100, JobStatus.Running)] }; });
+        }
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = async (request, _) =>
+            {
+                if (request.Id == "turn_gate")
+                {
+                    var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    releases.Add(release);
+                    entered.TrySetResult(true);
+                    await release.Task;
+                    if (!restarted) { _fake.EndBus(); }
+                    return new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+                }
+                if (request.Id == "checkpoint") { _fake.EndBus(); }
+                return new SessionPermissionReplyRequest { Decision = request.Id == "checkpoint" ? PermissionReply.Once : PermissionReply.Reject };
+            },
+        });
+        var updates = new List<AgentResponseUpdate>();
+        var result = CaptureRunFailureAsync(agent, updates);
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, result)).IsSameReferenceAs(entered.Task);
+            await Assert.That(trace).IsEmpty();
+            foreach (var release in releases) { release.TrySetResult(true); }
+            if (restarted)
+            {
+                await Assert.That((await result)?.Message).IsEqualTo("The event stream ended before background work settled.");
+                await _fake.Session.Received(1).ReplyToPermissionAsync("checkpoint", Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Once), OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
+            }
+            else
+            {
+                await Assert.That(await result).IsNull();
+                await Assert.That(trace).IsEquivalentTo([FakeOpenCode.SessionId, "boundary", "newer"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+            }
+        }
+        finally
+        {
+            foreach (var release in releases) { release.TrySetResult(true); }
+            _fake.EndBus();
+            await result;
+        }
+    }
+#pragma warning restore OPENCODE001
+
+#pragma warning disable OPENCODE001 // Later job outcomes do not replace the original turn's outcome.
+    [Test]
+    [Arguments("success")]
+    [Arguments("user")]
+    [Arguments("failed")]
+    [Arguments("shutdown")]
+    public async Task RunAsync_Should_Preserve_The_Original_Turns_Outcome_While_Settling(string outcome)
+    {
+        _fake.AddSession("child", FakeOpenCode.SessionId);
+        var end = outcome switch
+        {
+            "failed" => TurnEvents.Failed("original failure"),
+            "shutdown" => TurnEvents.Interrupted(SessionExecutionInterruptedDataReason.Shutdown),
+            "user" => TurnEvents.Interrupted(SessionExecutionInterruptedDataReason.User),
+            _ => TurnEvents.Succeeded(),
+        };
+        _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("original"), end]);
+        var checks = 0;
+        _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                checks++;
+                if (checks == 1) { _fake.Emit(TurnEvents.PermissionAsked("late", "child")); }
+                return new ExperimentalJobListResponse { Status = 200, Jobs = checks == 1 ? [TurnEvents.SubagentJob("job", FakeOpenCode.SessionId, "child", 100, JobStatus.Error)] : [] };
+            });
+        var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = (_, _) =>
+            {
+                _fake.Emit(TurnEvents.Failed("later root failure"));
+                return new(reply);
+            },
+        });
+
+        if (outcome is "failed" or "shutdown")
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.RunAsync("hello"));
+            await Assert.That(error?.Message).IsEqualTo(outcome == "failed" ? "Session error: original failure" : "Session error: the OpenCode server is shutting down");
+            await Assert.That(checks).IsEqualTo(0);
+        }
+        else
+        {
+            var response = await agent.RunAsync("hello");
+            await Assert.That(response.Text).IsEqualTo("original");
+            await Assert.That(checks).IsEqualTo(2);
+            await _fake.Sessions.GetSessionClient("child").Received(1).ReplyToPermissionAsync("late", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
+        }
+    }
+#pragma warning restore OPENCODE001
+
+#pragma warning disable OPENCODE001 // The SDK's failure must remain observable after original output has streamed.
+    [Test]
+    public async Task RunAsync_Should_Surface_Background_Failure_And_Close_The_Bus()
+    {
+        var failure = new OpenCodeTransportException("background wait failed");
+        _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("original"), TurnEvents.Succeeded()]);
+        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<ExperimentalSessionWaitResponse>(failure));
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await CaptureRunFailureAsync(agent, updates);
+
+        await Assert.That(error).IsSameReferenceAs(failure);
+        await AssertOriginalOutputAndClosedBusAsync(updates);
+    }
+#pragma warning restore OPENCODE001
+
+#pragma warning disable OPENCODE001 // Cancellation must leave the experimental idle/check cycle and close the bus.
+    [Test]
+    public async Task RunAsync_Should_Cancel_A_Background_Wait_And_Close_The_Bus()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("original"), TurnEvents.Succeeded()]);
+        _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                _fake.Emit(TurnEvents.PermissionAsked("marker"));
+                return new ExperimentalJobListResponse { Status = 200, Jobs = [TurnEvents.ShellJob("shell", FakeOpenCode.SessionId, 100, JobStatus.Running)] };
+            });
+        var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = (_, _) => { entered.TrySetResult(true); return new(reply); },
+        });
+        var updates = new List<AgentResponseUpdate>();
+        var result = CaptureRunFailureAsync(agent, updates, cancellation.Token);
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, result)).IsSameReferenceAs(entered.Task);
+            await cancellation.CancelOnWorkerAsync();
+            var error = (await Assert.That(await result).IsTypeOf<OperationCanceledException>())!; // The assertion proves cancellation exists.
+            await Assert.That(error.CancellationToken).IsEqualTo(cancellation.Token);
+        }
+        finally
+        {
+            await cancellation.CancelOnWorkerAsync();
+            await result;
+        }
+
+        await _fake.Experimental.Received(1).WaitForSessionAsync(FakeOpenCode.SessionId, null, Arg.Any<CancellationToken>());
+        await _fake.Session.Received(1).ReplyToPermissionAsync("marker", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
+        await AssertOriginalOutputAndClosedBusAsync(updates);
+    }
+#pragma warning restore OPENCODE001
+
+    private async Task AssertOriginalOutputAndClosedBusAsync(List<AgentResponseUpdate> updates)
+    {
+        await Assert.That(updates.SelectMany(update => update.Contents).OfType<TextContent>().Select(content => content.Text)).IsEquivalentTo(["original"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    private static async Task<Exception?> CaptureRunFailureAsync(OpenCodeAgent agent, List<AgentResponseUpdate> updates, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await foreach (var update in agent.RunStreamingAsync("hello", cancellationToken: cancellationToken)) { updates.Add(update); }
+            return null;
+        }
+        catch (Exception error) { return error; }
     }
 
     /// <summary>Runs a turn whose delivery is followed by <paramref name="interposed"/>, then Text("a") and its own success, and returns the run's text.</summary>

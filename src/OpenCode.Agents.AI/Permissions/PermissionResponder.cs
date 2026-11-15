@@ -13,6 +13,20 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
 
     private readonly Dictionary<string, bool> _owned = new(StringComparer.Ordinal) { [sessionId] = true };
     private readonly HashSet<string> _answered = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _rejectedWithoutMessage = new(StringComparer.Ordinal);
+
+    public bool HasRejectedWithoutMessage(string requestSessionId) => _rejectedWithoutMessage.Contains(requestSessionId);
+
+    public void OnExecutionStarted(string sessionId) => _rejectedWithoutMessage.Remove(sessionId);
+
+    public async ValueTask ReconcileAsync(CancellationToken cancellationToken)
+    {
+        var response = await sessions.GetSessionClient(sessionId).ListRequestsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        foreach (var request in response.Requests)
+        {
+            await RespondAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     public async ValueTask<bool> OwnsAsync(string requestSessionId, CancellationToken cancellationToken)
     {
@@ -34,6 +48,18 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
         _owned[requestSessionId] = owned;
         return owned;
     }
+
+    public ValueTask RespondAsync(PermissionAsked asked, CancellationToken cancellationToken) => RespondAsync(new PermissionRequest
+    {
+        Id = asked.Data.Id,
+        SessionId = asked.Data.SessionId,
+        Action = asked.Data.Action,
+        Resources = asked.Data.Resources,
+        Save = asked.Data.Save,
+        Metadata = asked.Data.Metadata,
+        Source = asked.Data.Source,
+        Message = asked.Data.Message,
+    }, cancellationToken);
 
     public async ValueTask RespondAsync(PermissionRequest request, CancellationToken cancellationToken)
     {
@@ -80,6 +106,11 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
             var status = response.Status.ToString(CultureInfo.InvariantCulture);
             throw new OpenCodeApiException($"The permission reply for request '{request.Id}' failed with HTTP {status} ({response.Error?.Tag ?? "untyped"}).",
                 response.Status, response.Error, response.RawBody);
+        }
+
+        if (!response.IsError && reply.Decision == PermissionReply.Reject && (!reply.Message.IsSet || string.IsNullOrEmpty(reply.Message.Value)))
+        {
+            _rejectedWithoutMessage.Add(request.SessionId);
         }
     }
 }

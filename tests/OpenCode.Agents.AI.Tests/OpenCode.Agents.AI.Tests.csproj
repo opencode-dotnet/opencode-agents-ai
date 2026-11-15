@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/OpenCode.Agents.AI/OpenCode.Agents.AI.csproj" />
+    <EmbeddedResource Include="../../docs/architecture/agent-integration.md" LogicalName="Fixtures.AgentIntegration.md" />
   </ItemGroup>
 
   <PropertyGroup>

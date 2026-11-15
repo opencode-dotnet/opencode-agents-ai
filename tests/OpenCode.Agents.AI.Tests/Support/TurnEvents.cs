@@ -108,23 +108,90 @@ internal static class TurnEvents
         Data = new SessionExecutionSucceededData { SessionId = sessionId },
     };
 
-    public static IEvent Failed(string message) => new SessionExecutionFailed
+    public static IEvent Failed(string message, string sessionId = FakeOpenCode.SessionId) => new SessionExecutionFailed
     {
         Id = "event_failed",
         Created = 1,
-        Durable = new SessionExecutionFailedDurable { AggregateId = FakeOpenCode.SessionId, Seq = 2, Version = 1 },
+        Durable = new SessionExecutionFailedDurable { AggregateId = sessionId, Seq = 2, Version = 1 },
         Data = new SessionExecutionFailedData
         {
-            SessionId = FakeOpenCode.SessionId,
+            SessionId = sessionId,
             Error = new SessionStructuredError { Type = "model_error", Message = message },
         },
     };
 
-    public static IEvent Interrupted(SessionExecutionInterruptedDataReason reason) => new SessionExecutionInterrupted
+    public static IEvent Interrupted(SessionExecutionInterruptedDataReason reason, string sessionId = FakeOpenCode.SessionId) => new SessionExecutionInterrupted
     {
         Id = "event_interrupted",
         Created = 1,
-        Durable = new SessionExecutionInterruptedDurable { AggregateId = FakeOpenCode.SessionId, Seq = 2, Version = 1 },
-        Data = new SessionExecutionInterruptedData { SessionId = FakeOpenCode.SessionId, Reason = reason },
+        Durable = new SessionExecutionInterruptedDurable { AggregateId = sessionId, Seq = 2, Version = 1 },
+        Data = new SessionExecutionInterruptedData { SessionId = sessionId, Reason = reason },
+    };
+
+    public static PermissionRequest PendingPermission(string requestId, string sessionId = FakeOpenCode.SessionId)
+    {
+        var asked = PermissionAsked(requestId, sessionId).Data;
+        return new PermissionRequest
+        {
+            Id = asked.Id,
+            SessionId = asked.SessionId,
+            Action = asked.Action,
+            Resources = asked.Resources,
+            Save = asked.Save,
+            Metadata = asked.Metadata,
+            Source = asked.Source,
+            Message = asked.Message,
+        };
+    }
+
+#pragma warning disable OPENCODE001 // These builders construct the SDK's experimental wire records.
+    public static JobSubagent SubagentJob(string id, string ownerSessionId, string childSessionId, double started, JobStatus status) => new()
+    {
+        Id = id,
+        SessionId = ownerSessionId,
+        ChildSessionId = childSessionId,
+        Time = new JobTime { Started = started },
+        Status = status,
+        Agent = "build",
+        Description = "Background implementation",
+    };
+#pragma warning restore OPENCODE001
+
+#pragma warning disable OPENCODE001 // The shell job builder uses the SDK's experimental model.
+    public static JobShell ShellJob(string id, string sessionId, double started, JobStatus status) => new()
+    {
+        Id = id,
+        SessionId = sessionId,
+        Time = new JobTime { Started = started },
+        Status = status,
+        ShellId = "shell_test",
+        Command = "build",
+    };
+#pragma warning restore OPENCODE001
+
+#pragma warning disable OPENCODE001 // The image job builder uses the SDK's experimental model.
+    public static JobImage ImageJob(string id, string sessionId, double started, JobStatus status) => new()
+    {
+        Id = id,
+        SessionId = sessionId,
+        Time = new JobTime { Started = started },
+        Status = status,
+        Path = "image.png",
+        Model = "image-model",
+    };
+#pragma warning restore OPENCODE001
+
+#pragma warning disable OPENCODE001 // The public unknown carrier preserves future experimental job shapes.
+    public static UnknownJobInfo UnknownJob(string kind) => new(kind,
+        JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal) { ["kind"] = kind }));
+#pragma warning restore OPENCODE001
+
+    public static SessionInboxSynthetic QueuedWake(string id, string sessionId) => new()
+    {
+        Id = id,
+        SessionId = sessionId,
+        Time = new SessionInboxSyntheticTime { Created = 101 },
+        Payload = new SessionInboxSyntheticPayload { Text = "Background work finished" },
+        Delivery = SessionInboxDelivery.Queue,
     };
 }
