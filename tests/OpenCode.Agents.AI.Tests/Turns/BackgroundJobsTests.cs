@@ -279,8 +279,8 @@ public sealed class BackgroundJobsTests
 #pragma warning disable OPENCODE001 // JobStatus.Running and TaskCompletionSource<ExperimentalSessionWaitResponse> arrange the live decline.
         ListJobs(_ => [TurnEvents.SubagentJob("job", FakeOpenCode.SessionId, "child", 100, JobStatus.Running)]);
         var releases = new List<TaskCompletionSource<ExperimentalSessionWaitResponse>>();
-        HoldIdleWait(entered, releases, trace: false);
 #pragma warning restore OPENCODE001 // JobStatus.Running and TaskCompletionSource<ExperimentalSessionWaitResponse> arrangement ends here.
+        HoldIdleWait(entered, releases, trace: false);
         var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Reject };
         child.ReplyToPermissionAsync("decline", reply, Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
         {
@@ -384,8 +384,8 @@ public sealed class BackgroundJobsTests
         var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 #pragma warning disable OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> arranges the held root idle wait.
         var releases = new List<TaskCompletionSource<ExperimentalSessionWaitResponse>>();
-        HoldIdleWait(entered, releases, trace: false);
 #pragma warning restore OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> arrangement ends here.
+        HoldIdleWait(entered, releases, trace: false);
         var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
         child.ReplyToPermissionAsync("late", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -562,8 +562,8 @@ public sealed class BackgroundJobsTests
         var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 #pragma warning disable OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> arranges the defensive EOF wait.
         var releases = new List<TaskCompletionSource<ExperimentalSessionWaitResponse>>();
-        HoldIdleWait(entered, releases, trace: true);
 #pragma warning restore OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> arrangement ends here.
+        HoldIdleWait(entered, releases, trace: true);
         TraceQueries();
         if (pending)
         {
@@ -647,6 +647,60 @@ public sealed class BackgroundJobsTests
     }
 
     [Test]
+    public async Task WaitAsync_Should_Cancel_And_Join_The_Idle_Wait_When_The_Callback_Cancels_The_Caller()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var joined = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelledInCallback = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackReleases = new List<TaskCompletionSource<bool>>();
+#pragma warning disable OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> holds the SDK idle wait.
+        var waits = new List<TaskCompletionSource<ExperimentalSessionWaitResponse>>();
+#pragma warning restore OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> declaration ends here.
+        HoldCancellableIdleWait(entered, joined, waits);
+        CancellationToken waitToken = default;
+        var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, async (_, _) =>
+        {
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            callbackReleases.Add(release);
+            await cancellation.CancelOnWorkerAsync();
+            cancelledInCallback.TrySetResult(waitToken.IsCancellationRequested);
+            await release.Task;
+            return reply;
+        });
+        // Keep the bus live so only caller-to-waiter cancellation can release the held SDK wait.
+        await using var pump = EventPump.Start(_fake.Client.Events, CancellationToken.None);
+        var jobs = new BackgroundJobs(_fake.Client, FakeOpenCode.SessionId, 100, responder);
+        var outcome = WaitOutcomeAsync(jobs, pump.Reader, cancellation.Token);
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, outcome)).IsSameReferenceAs(entered.Task);
+            waitToken = await entered.Task;
+            await Assert.That(joined.Task.IsCompleted).IsFalse();
+            _fake.Emit(TurnEvents.PermissionAsked("marker"));
+            await Assert.That(await Task.WhenAny(cancelledInCallback.Task, outcome)).IsSameReferenceAs(cancelledInCallback.Task);
+            // The callback is still held, so the waiter's finally cannot cause this cancellation.
+            await Assert.That(await cancelledInCallback.Task).IsTrue();
+            await Assert.That(await Task.WhenAny(joined.Task, outcome)).IsSameReferenceAs(joined.Task);
+            await Assert.That(joined.Task.Status).IsEqualTo(TaskStatus.RanToCompletion);
+            foreach (var release in callbackReleases) { release.TrySetResult(true); }
+            var error = (await Assert.That(await outcome).IsTypeOf<OperationCanceledException>())!; // The assertion proves cancellation exists.
+            await Assert.That(error.CancellationToken).IsEqualTo(cancellation.Token);
+        }
+        finally
+        {
+            foreach (var release in callbackReleases) { release.TrySetResult(true); }
+            await cancellation.CancelOnWorkerAsync();
+            // Release the test-owned SDK gate after a failed pre-finally assertion too.
+            foreach (var idle in waits) { idle.TrySetCanceled(waitToken); }
+            await outcome;
+        }
+
+        await AssertMarkerReplyAsync(reply);
+    }
+
+    [Test]
     [Arguments("caller")]
     [Arguments("callback")]
     [Arguments("wait")]
@@ -655,25 +709,13 @@ public sealed class BackgroundJobsTests
     {
         using var cancellation = new CancellationTokenSource();
         var callerFailure = new OperationCanceledException("cancelled background query", cancellation.Token);
-        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
 #pragma warning disable OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> holds the SDK wait responses.
         var waits = new List<TaskCompletionSource<ExperimentalSessionWaitResponse>>();
 #pragma warning restore OPENCODE001 // TaskCompletionSource<ExperimentalSessionWaitResponse> declaration ends here.
         var joined = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         CancellationToken waitToken = default;
-#pragma warning disable OPENCODE001 // ExperimentalClient.WaitForSessionAsync arranges the owned HTTP wait and its cancellation.
-        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
-            .Returns(async call =>
-            {
-                waitToken = call.Arg<CancellationToken>();
-                var idle = new TaskCompletionSource<ExperimentalSessionWaitResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-                waits.Add(idle);
-                using var registration = waitToken.Register(() => idle.TrySetCanceled(waitToken));
-                entered.TrySetResult(true);
-                try { return await idle.Task; }
-                finally { joined.TrySetResult(true); }
-            });
-#pragma warning restore OPENCODE001 // ExperimentalClient.WaitForSessionAsync arrangement ends here.
+        HoldCancellableIdleWait(entered, joined, waits);
         if (scenario == "caller")
         {
 #pragma warning disable OPENCODE001 // ExperimentalClient.ListJobsAsync supplies a known caller-cancellation exception.
@@ -700,6 +742,7 @@ public sealed class BackgroundJobsTests
         try
         {
             await Assert.That(await Task.WhenAny(entered.Task, outcome)).IsSameReferenceAs(entered.Task);
+            waitToken = await entered.Task;
             _fake.Emit(TurnEvents.PermissionAsked("marker"));
             var error = await outcome;
             if (scenario == "caller")
@@ -768,6 +811,26 @@ public sealed class BackgroundJobsTests
         }
 
         await _fake.Session.Received(1).ReplyToPermissionAsync("failure", Arg.Is<SessionPermissionReplyRequest>(reply => reply.Message.Value == PermissionResponder.HandlerFailedMessage), OpenCodeRequestOptions.NoThrow, CancellationToken.None);
+    }
+
+#pragma warning disable OPENCODE001 // ExperimentalSessionWaitResponse appears in the cancellable gate parameter declaration.
+    private void HoldCancellableIdleWait(TaskCompletionSource<CancellationToken> entered, TaskCompletionSource<bool> joined,
+        List<TaskCompletionSource<ExperimentalSessionWaitResponse>> waits)
+#pragma warning restore OPENCODE001 // ExperimentalSessionWaitResponse parameter declaration ends here.
+    {
+#pragma warning disable OPENCODE001 // ExperimentalClient.WaitForSessionAsync arranges cancellation and settlement of the SDK wait.
+        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                var token = call.Arg<CancellationToken>();
+                var idle = new TaskCompletionSource<ExperimentalSessionWaitResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+                waits.Add(idle);
+                using var registration = token.Register(() => idle.TrySetCanceled(token));
+                entered.TrySetResult(token);
+                try { return await idle.Task; }
+                finally { joined.TrySetResult(true); }
+            });
+#pragma warning restore OPENCODE001 // ExperimentalClient.WaitForSessionAsync arrangement ends here.
     }
 
 #pragma warning disable OPENCODE001 // ExperimentalSessionWaitResponse appears in the gate parameter declaration.
