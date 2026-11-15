@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.ExceptionServices;
 using OpenCode.Sdk;
 using OpenCode.Sdk.Models;
@@ -8,10 +9,10 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
     Func<PermissionRequest, CancellationToken, ValueTask<SessionPermissionReplyRequest>>? onPermissionRequest)
 {
     public const string NoHandlerMessage = "No permission handler is configured, so the request was rejected. Continue without this action.";
+    public const string HandlerFailedMessage = "The permission handler failed, so this request was rejected.";
 
     private readonly Dictionary<string, bool> _owned = new(StringComparer.Ordinal) { [sessionId] = true };
     private readonly HashSet<string> _answered = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _rejectedSessions = new(StringComparer.Ordinal);
 
     public async ValueTask<bool> OwnsAsync(string requestSessionId, CancellationToken cancellationToken)
     {
@@ -54,7 +55,7 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
                 try
                 {
                     // Settlement must still be attempted after the caller cancels the callback.
-                    await ReplyAsync(request, new SessionPermissionReplyRequest { Decision = PermissionReply.Reject }, CancellationToken.None).ConfigureAwait(false);
+                    await ReplyAsync(request, new SessionPermissionReplyRequest { Decision = PermissionReply.Reject, Message = HandlerFailedMessage }, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception rejectionError)
                 {
@@ -71,19 +72,13 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
 
     private async ValueTask ReplyAsync(PermissionRequest request, SessionPermissionReplyRequest reply, CancellationToken cancellationToken)
     {
-        try
+        var response = await sessions.GetSessionClient(request.SessionId)
+            .ReplyToPermissionAsync(request.Id, reply, OpenCodeRequestOptions.NoThrow, cancellationToken).ConfigureAwait(false);
+        // A not-found reply means the request is no longer pending.
+        if (response.IsError && response.Error is not PermissionNotFoundError)
         {
-            await sessions.GetSessionClient(request.SessionId).ReplyToPermissionAsync(request.Id, reply, cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-        catch (OpenCodeApiException error) when (error.Error is PermissionNotFoundError && _rejectedSessions.Contains(request.SessionId))
-        {
-            // A successful Reject already settles every pending ask of that session.
-            return;
-        }
-
-        if (reply.Decision == PermissionReply.Reject)
-        {
-            _rejectedSessions.Add(request.SessionId);
+            throw new OpenCodeApiException($"The permission reply for request '{request.Id}' failed with HTTP {response.Status.ToString(CultureInfo.InvariantCulture)}.",
+                response.Status, response.Error, response.RawBody);
         }
     }
 }

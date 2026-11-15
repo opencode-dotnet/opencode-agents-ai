@@ -46,7 +46,7 @@ public sealed class PermissionResponderTests
 
         var call = Replies(_fake.Session).Single();
         await Assert.That(call.GetArguments()[1]).IsSameReferenceAs(reply);
-        await _fake.Session.Received(1).ReplyToPermissionAsync("per_1", reply, null, cancellation.Token);
+        await _fake.Session.Received(1).ReplyToPermissionAsync("per_1", reply, OpenCodeRequestOptions.NoThrow, cancellation.Token);
         await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["per_1"], CollectionOrdering.Matching);
     }
 
@@ -126,7 +126,7 @@ public sealed class PermissionResponderTests
         await responder.RespondAsync(Request(sessionId: "ses_child"), CancellationToken.None);
 
         await Assert.That(received).IsEquivalentTo(["per_1"], CollectionOrdering.Matching);
-        await child.Received(1).ReplyToPermissionAsync("per_1", reply, null, CancellationToken.None);
+        await child.Received(1).ReplyToPermissionAsync("per_1", reply, OpenCodeRequestOptions.NoThrow, CancellationToken.None);
         await Assert.That(ReplyIds(child)).IsEquivalentTo(["per_1"], CollectionOrdering.Matching);
         await Assert.That(Replies(_fake.Session)).IsEmpty();
     }
@@ -230,7 +230,8 @@ public sealed class PermissionResponderTests
             await Assert.That(outcome.IsCompleted).IsFalse();
             var rejection = await entered.Task;
             await Assert.That(rejection.Decision).IsEqualTo(PermissionReply.Reject);
-            await Assert.That(rejection.Message.IsSet).IsFalse();
+            await Assert.That(rejection.Message.Value).IsEqualTo(PermissionResponder.HandlerFailedMessage);
+            await Assert.That(PermissionResponder.HandlerFailedMessage).IsEqualTo("The permission handler failed, so this request was rejected.");
         }
         finally
         {
@@ -252,27 +253,87 @@ public sealed class PermissionResponderTests
     }
 
     [Test]
-    [Arguments("transport")]
-    [Arguments("not-found")]
-    [Arguments("untyped-404")]
-    public async Task RespondAsync_Should_Surface_The_Reply_Failure_Without_Retrying(string kind)
+    [Arguments("transport", false, false)]
+    [Arguments("not-found", false, false)]
+    [Arguments("not-found", true, false)]
+    [Arguments("untyped-404", false, false)]
+    [Arguments("api", false, false)]
+    [Arguments("not-found", false, true)]
+    [Arguments("not-found", true, true)]
+    [Arguments("transport", false, true)]
+    [Arguments("untyped-404", false, true)]
+    public async Task RespondAsync_Should_Ignore_Not_Found_And_Surface_Other_Reply_Failures_Without_Retrying(string kind, bool childSession, bool priorReject)
     {
-        var failure = ReplyFailure(kind, "per_1");
-        FailReply(_fake.Session, "per_1", failure);
+        var target = childSession ? _fake.AddSession("ses_child", FakeOpenCode.SessionId) : _fake.Session;
+        var requestId = priorReject ? "per_2" : "per_1";
+        var failure = new OpenCodeTransportException("reply failed");
+        var response = ReplyError(kind, requestId);
+        if (kind == "transport")
+        {
+            FailReply(target, requestId, failure);
+        }
+        else
+        {
+            target.ReplyToPermissionAsync(requestId, Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(response);
+        }
+
         var callbacks = new List<string>();
         var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
         {
             callbacks.Add(request.Id);
-            return new(Reply("absent"));
+            return new(new SessionPermissionReplyRequest { Decision = priorReject && request.Id == "per_1" ? PermissionReply.Reject : PermissionReply.Once });
         });
+        if (priorReject)
+        {
+            await responder.RespondAsync(Request(), CancellationToken.None);
+        }
 
-        var error = await Assert.ThrowsAsync<OpenCodeException>(async () => await responder.RespondAsync(Request(), CancellationToken.None));
-        await responder.RespondAsync(Request(), CancellationToken.None);
+        var request = Request(requestId, childSession ? "ses_child" : FakeOpenCode.SessionId);
+        var error = await CaptureFailureAsync(() => responder.RespondAsync(request, CancellationToken.None).AsTask());
+        await responder.RespondAsync(request, CancellationToken.None);
 
-        await Assert.That(error).IsSameReferenceAs(failure);
-        await Assert.That(callbacks).IsEquivalentTo(["per_1"], CollectionOrdering.Matching);
-        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["per_1"], CollectionOrdering.Matching);
-        await Assert.That(((SessionPermissionReplyRequest)Replies(_fake.Session).Single().GetArguments()[1]!).Decision).IsEqualTo(PermissionReply.Once); // The SDK signature requires a body.
+        if (kind == "not-found")
+        {
+            await Assert.That(error).IsNull();
+            if (priorReject)
+            {
+                await responder.RespondAsync(Request("per_3"), CancellationToken.None);
+            }
+        }
+        else if (kind == "transport")
+        {
+            await Assert.That(error).IsSameReferenceAs(failure);
+        }
+        else
+        {
+            var api = (await Assert.That(error).IsTypeOf<OpenCodeApiException>())!; // The type assertion proves an API exception exists.
+            await Assert.That(api.Status).IsEqualTo(response.Status);
+            await Assert.That(api.Error).IsSameReferenceAs(response.Error);
+            await Assert.That(api.RawBody).IsEqualTo(response.RawBody);
+            var expectedMessage = (priorReject, kind) switch
+            {
+                (true, _) => "The permission reply for request 'per_2' failed with HTTP 404.",
+                (_, "api") => "The permission reply for request 'per_1' failed with HTTP 401.",
+                _ => "The permission reply for request 'per_1' failed with HTTP 404.",
+            };
+            await Assert.That(api.Message).IsEqualTo(expectedMessage);
+        }
+
+        string[] expected = (priorReject, kind) switch
+        {
+            (false, _) => ["per_1"],
+            (_, "not-found") => ["per_1", "per_2", "per_3"],
+            _ => ["per_1", "per_2"],
+        };
+        await Assert.That(callbacks).IsEquivalentTo(expected, CollectionOrdering.Matching);
+        await target.Received(1).ReplyToPermissionAsync(requestId, Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Once), OpenCodeRequestOptions.NoThrow, CancellationToken.None);
+        var targetReplies = childSession ? [requestId] : expected;
+        await Assert.That(ReplyIds(target)).IsEquivalentTo(targetReplies, CollectionOrdering.Matching);
+        if (childSession)
+        {
+            string[] rootReplies = priorReject ? ["per_1", "per_3"] : [];
+            await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(rootReplies, CollectionOrdering.Matching);
+        }
     }
 
     [Test]
@@ -309,52 +370,15 @@ public sealed class PermissionResponderTests
         }
 
         await Assert.That(tokens).IsEquivalentTo([cancellation.Token], CollectionOrdering.Matching);
-        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Any<SessionPermissionReplyRequest>(), null, CancellationToken.None);
+        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Any<SessionPermissionReplyRequest>(), OpenCodeRequestOptions.NoThrow, CancellationToken.None);
         var call = Replies(target).Single();
         var reply = (SessionPermissionReplyRequest)call.GetArguments()[1]!; // The SDK signature requires a body.
         await Assert.That(reply.Decision).IsEqualTo(PermissionReply.Reject);
-        await Assert.That(reply.Message.IsSet).IsFalse();
+        await Assert.That(reply.Message.Value).IsEqualTo(PermissionResponder.HandlerFailedMessage);
         await Assert.That(((CancellationToken)call.GetArguments()[3]!).IsCancellationRequested).IsFalse(); // The SDK signature requires the token value.
         if (childSession)
         {
             await Assert.That(Replies(_fake.Session)).IsEmpty();
-        }
-    }
-
-    [Test]
-    [Arguments("same", "not-found")]
-    [Arguments("other", "not-found")]
-    [Arguments("same", "transport")]
-    [Arguments("same", "untyped-404")]
-    public async Task RespondAsync_Should_Tolerate_Only_A_Sibling_Already_Settled_By_Its_Reject(string session, string kind)
-    {
-        var child = _fake.AddSession("ses_child", FakeOpenCode.SessionId);
-        var target = session == "same" ? _fake.Session : child;
-        var failure = ReplyFailure(kind, "per_2");
-        FailReply(target, "per_2", failure);
-        var callbacks = new List<string>();
-        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
-        {
-            callbacks.Add(request.Id);
-            return new(new SessionPermissionReplyRequest { Decision = request.Id == "per_1" ? PermissionReply.Reject : PermissionReply.Once });
-        });
-
-        await responder.RespondAsync(Request(), CancellationToken.None);
-        var error = await CaptureFailureAsync(() => responder.RespondAsync(Request("per_2", session == "same" ? FakeOpenCode.SessionId : "ses_child"), CancellationToken.None).AsTask());
-
-        if (session == "same" && kind == "not-found")
-        {
-            await Assert.That(error).IsNull();
-            await responder.RespondAsync(Request("per_3"), CancellationToken.None);
-            await Assert.That(callbacks).IsEquivalentTo(["per_1", "per_2", "per_3"], CollectionOrdering.Matching);
-            await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["per_1", "per_2", "per_3"], CollectionOrdering.Matching);
-        }
-        else
-        {
-            await Assert.That(error).IsSameReferenceAs(failure);
-            await Assert.That(callbacks).IsEquivalentTo(["per_1", "per_2"], CollectionOrdering.Matching);
-            string[] expected = session == "same" ? ["per_1", "per_2"] : ["per_2"];
-            await Assert.That(ReplyIds(target)).IsEquivalentTo(expected, CollectionOrdering.Matching);
         }
     }
 
@@ -379,7 +403,7 @@ public sealed class PermissionResponderTests
         await Assert.That(error!.InnerExceptions).IsEquivalentTo([callbackFailure, replyFailure], CollectionOrdering.Matching); // ThrowsAsync proves the aggregate exists.
         await Assert.That(error.InnerExceptions[0]).IsSameReferenceAs(callbackFailure);
         await Assert.That(error.InnerExceptions[1]).IsSameReferenceAs(replyFailure);
-        await _fake.Session.Received(1).ReplyToPermissionAsync("per_1", Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Reject && !reply.Message.IsSet), null, CancellationToken.None);
+        await _fake.Session.Received(1).ReplyToPermissionAsync("per_1", Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Reject && reply.Message.Value == PermissionResponder.HandlerFailedMessage), OpenCodeRequestOptions.NoThrow, CancellationToken.None);
         await Assert.That(Replies(_fake.Session).Length).IsEqualTo(1);
     }
 
@@ -419,11 +443,34 @@ public sealed class PermissionResponderTests
         var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await responder.RespondAsync(request, cancellation.Token));
 
         await Assert.That(error?.Message).IsEqualTo("The permission callback returned no reply.");
-        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Any<SessionPermissionReplyRequest>(), null, CancellationToken.None);
+        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Any<SessionPermissionReplyRequest>(), OpenCodeRequestOptions.NoThrow, CancellationToken.None);
         var call = Replies(target).Single();
         var rejection = (SessionPermissionReplyRequest)call.GetArguments()[1]!; // The SDK signature requires a reply body.
         await Assert.That(rejection.Decision).IsEqualTo(PermissionReply.Reject);
-        await Assert.That(rejection.Message.IsSet).IsFalse();
+        await Assert.That(rejection.Message.Value).IsEqualTo(PermissionResponder.HandlerFailedMessage);
+        if (childSession)
+        {
+            await Assert.That(Replies(_fake.Session)).IsEmpty();
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RespondAsync_Should_Rethrow_The_Callback_Failure_When_Its_Rejection_Is_Not_Found(bool childSession)
+    {
+        var target = childSession ? _fake.AddSession("ses_child", FakeOpenCode.SessionId) : _fake.Session;
+        var request = Request(sessionId: childSession ? "ses_child" : FakeOpenCode.SessionId);
+        target.ReplyToPermissionAsync("per_1", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(ReplyError("not-found", "per_1"));
+        var failure = new InvalidOperationException("callback failed");
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (_, _) => throw failure);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await responder.RespondAsync(request, CancellationToken.None));
+
+        await Assert.That(error).IsSameReferenceAs(failure);
+        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Reject && reply.Message.Value == PermissionResponder.HandlerFailedMessage), OpenCodeRequestOptions.NoThrow, CancellationToken.None);
+        await Assert.That(ReplyIds(target)).IsEquivalentTo(["per_1"], CollectionOrdering.Matching);
         if (childSession)
         {
             await Assert.That(Replies(_fake.Session)).IsEmpty();
@@ -454,11 +501,17 @@ public sealed class PermissionResponderTests
         client.ReplyToPermissionAsync(requestId, Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromException<SessionPermissionReplyResponse>(failure));
 
-    private static OpenCodeException ReplyFailure(string kind, string requestId) => kind switch
+    private static SessionPermissionReplyResponse ReplyError(string kind, string requestId) => new()
     {
-        "transport" => new OpenCodeTransportException("reply failed"),
-        "not-found" => new OpenCodeApiException("already settled", 404, new PermissionNotFoundError { RequestId = requestId, Message = "already settled" }, rawBody: null),
-        _ => new OpenCodeApiException("unknown route", 404, error: null, rawBody: null),
+        IsError = true,
+        Status = kind == "api" ? 401 : 404,
+        Error = kind switch
+        {
+            "not-found" => new PermissionNotFoundError { RequestId = requestId, Message = "already settled" },
+            "api" => new UnauthorizedError { Message = "reply denied" },
+            _ => null,
+        },
+        RawBody = kind == "not-found" ? "already settled" : "reply denied",
     };
 
     private static async Task<Exception?> CaptureFailureAsync(Func<Task> action)

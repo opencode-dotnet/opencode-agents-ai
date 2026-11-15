@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using NSubstitute;
+using OpenCode.Agents.AI.Permissions;
 using OpenCode.Agents.AI.Tests.Support;
 using OpenCode.Sdk;
 using OpenCode.Sdk.Models;
@@ -53,7 +54,7 @@ public sealed class OpenCodeAgentRunTests
         await Assert.That(actual.Source?.MessageId).IsEqualTo("msg_permission");
         await Assert.That(actual.Source?.Id).IsEqualTo("call_edit");
         await Assert.That(actual.Message).IsEqualTo("Update these files?");
-        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Is<SessionPermissionReplyRequest>(value => ReferenceEquals(value, reply)), null, Arg.Any<CancellationToken>());
+        await target.Received(1).ReplyToPermissionAsync("per_1", Arg.Is<SessionPermissionReplyRequest>(value => ReferenceEquals(value, reply)), OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
         await Assert.That(response.Text).IsEqualTo("done");
         if (child)
         {
@@ -74,7 +75,7 @@ public sealed class OpenCodeAgentRunTests
 
         await Assert.That(error).IsSameReferenceAs(failure);
         await _fake.Session.Received(1).ReplyToPermissionAsync("per_failed",
-            Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Reject && !reply.Message.IsSet), null, CancellationToken.None);
+            Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Reject && reply.Message.Value == PermissionResponder.HandlerFailedMessage), OpenCodeRequestOptions.NoThrow, CancellationToken.None);
         await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
     }
 

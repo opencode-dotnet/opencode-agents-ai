@@ -42,7 +42,7 @@ nothing is approved; a missing callback is not itself an exception
 requests of its own OpenCode session and of that session's children, because one OpenCode server
 carries the requests of every client.
 
-A failed reply to OpenCode leaves the run as an exception; only a not-found reply for a request that this run's own rejection already settled is ignored. OpenCode's non-interactive client ignores every reply failure; the agent surfaces them because a request whose answer was lost otherwise blocks its session without a trace. The step is reverted if OpenCode starts retrying or reconciling lost replies itself.
+A failed reply to OpenCode leaves the run as an exception; a not-found reply is ignored, because the request is no longer pending. OpenCode's non-interactive client ignores every reply failure; the agent surfaces them because a request whose answer was lost otherwise blocks its session without a trace. The step is reverted if OpenCode starts retrying or reconciling lost replies itself.
 
 ## Cancellation
 
