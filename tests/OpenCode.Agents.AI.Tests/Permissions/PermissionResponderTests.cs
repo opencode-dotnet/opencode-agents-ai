@@ -254,10 +254,15 @@ public sealed class PermissionResponderTests
 
     [Test]
     [Arguments("transport", false, false)]
+    [Arguments("transport", true, false)]
     [Arguments("not-found", false, false)]
     [Arguments("not-found", true, false)]
     [Arguments("untyped-404", false, false)]
     [Arguments("api", false, false)]
+    [Arguments("api", true, false)]
+    [Arguments("session-not-found", false, false)]
+    [Arguments("unknown-500", false, false)]
+    [Arguments("untyped-500", false, false)]
     [Arguments("not-found", false, true)]
     [Arguments("not-found", true, true)]
     [Arguments("transport", false, true)]
@@ -312,9 +317,12 @@ public sealed class PermissionResponderTests
             await Assert.That(api.RawBody).IsEqualTo(response.RawBody);
             var expectedMessage = (priorReject, kind) switch
             {
-                (true, _) => "The permission reply for request 'per_2' failed with HTTP 404.",
-                (_, "api") => "The permission reply for request 'per_1' failed with HTTP 401.",
-                _ => "The permission reply for request 'per_1' failed with HTTP 404.",
+                (true, _) => "The permission reply for request 'per_2' failed with HTTP 404 (untyped).",
+                (_, "api") => "The permission reply for request 'per_1' failed with HTTP 401 (UnauthorizedError).",
+                (_, "session-not-found") => "The permission reply for request 'per_1' failed with HTTP 404 (SessionNotFoundError).",
+                (_, "unknown-500") => "The permission reply for request 'per_1' failed with HTTP 500 (FuturePermissionError).",
+                (_, "untyped-500") => "The permission reply for request 'per_1' failed with HTTP 500 (untyped).",
+                _ => "The permission reply for request 'per_1' failed with HTTP 404 (untyped).",
             };
             await Assert.That(api.Message).IsEqualTo(expectedMessage);
         }
@@ -501,18 +509,29 @@ public sealed class PermissionResponderTests
         client.ReplyToPermissionAsync(requestId, Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromException<SessionPermissionReplyResponse>(failure));
 
-    private static SessionPermissionReplyResponse ReplyError(string kind, string requestId) => new()
+    private static SessionPermissionReplyResponse ReplyError(string kind, string requestId)
     {
-        IsError = true,
-        Status = kind == "api" ? 401 : 404,
-        Error = kind switch
+        const string unknownTag = "FuturePermissionError";
+        IOpenCodeError? error = kind switch
         {
             "not-found" => new PermissionNotFoundError { RequestId = requestId, Message = "already settled" },
             "api" => new UnauthorizedError { Message = "reply denied" },
+            "session-not-found" => new SessionNotFoundError { SessionId = "ses_missing", Message = "session missing" },
+            "unknown-500" => new UnknownOpenCodeError(unknownTag, JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["_tag"] = unknownTag,
+                ["message"] = "server failed",
+            })),
             _ => null,
-        },
-        RawBody = kind == "not-found" ? "already settled" : "reply denied",
-    };
+        };
+        return new SessionPermissionReplyResponse
+        {
+            IsError = true,
+            Status = kind switch { "api" => 401, "unknown-500" or "untyped-500" => 500, _ => 404 },
+            Error = error,
+            RawBody = error is null ? "reply denied" : JsonSerializer.Serialize(error, error.GetType()),
+        };
+    }
 
     private static async Task<Exception?> CaptureFailureAsync(Func<Task> action)
     {

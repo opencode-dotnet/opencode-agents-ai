@@ -77,7 +77,8 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
         // A not-found reply means the request is no longer pending.
         if (response.IsError && response.Error is not PermissionNotFoundError)
         {
-            throw new OpenCodeApiException($"The permission reply for request '{request.Id}' failed with HTTP {response.Status.ToString(CultureInfo.InvariantCulture)}.",
+            var status = response.Status.ToString(CultureInfo.InvariantCulture);
+            throw new OpenCodeApiException($"The permission reply for request '{request.Id}' failed with HTTP {status} ({response.Error?.Tag ?? "untyped"}).",
                 response.Status, response.Error, response.RawBody);
         }
     }
