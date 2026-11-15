@@ -1,5 +1,7 @@
 # OpenCode Agents AI
 
+[![CI](https://github.com/opencode-dotnet/opencode-agents-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/opencode-dotnet/opencode-agents-ai/actions/workflows/ci.yml) [![Linux Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Flinux%2Fopencode-dotnet%2Fopencode-agents-ai%2Fmaster)](https://api.localstackfor.net/redirect/test-results/linux/opencode-dotnet/opencode-agents-ai/master) [![Windows Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fwindows%2Fopencode-dotnet%2Fopencode-agents-ai%2Fmaster)](https://api.localstackfor.net/redirect/test-results/windows/opencode-dotnet/opencode-agents-ai/master) [![macOS Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fmacos%2Fopencode-dotnet%2Fopencode-agents-ai%2Fmaster)](https://api.localstackfor.net/redirect/test-results/macos/opencode-dotnet/opencode-agents-ai/master)
+
 > **Unofficial.** This project is not affiliated with or endorsed by the
 > [opencode](https://opencode.ai) team.
 
@@ -16,6 +18,15 @@ thin library adapter over the published OpenCode .NET SDK, intended for the NuGe
 
 [`docs/ROADMAP.md`](docs/ROADMAP.md) has the current state and what comes next. Usage arrives with
 the first version.
+
+### Build & Test Matrix
+
+| Category | Platform/Type | Status | Description |
+|----------|---------------|--------|-------------|
+| **🔧 Build** | Cross-Platform | [![CI](https://github.com/opencode-dotnet/opencode-agents-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/opencode-dotnet/opencode-agents-ai/actions/workflows/ci.yml) | Matrix: Windows, Linux, macOS |
+| **🧪 Tests** | Linux | [![Linux Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Flinux%2Fopencode-dotnet%2Fopencode-agents-ai%2Fmaster)](https://api.localstackfor.net/redirect/test-results/linux/opencode-dotnet/opencode-agents-ai/master) | `net10.0`, `net11.0` |
+| **🧪 Tests** | Windows | [![Windows Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fwindows%2Fopencode-dotnet%2Fopencode-agents-ai%2Fmaster)](https://api.localstackfor.net/redirect/test-results/windows/opencode-dotnet/opencode-agents-ai/master) | `net472`, `net10.0`, `net11.0` |
+| **🧪 Tests** | macOS | [![macOS Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.localstackfor.net%2Fbadges%2Ftests%2Fmacos%2Fopencode-dotnet%2Fopencode-agents-ai%2Fmaster)](https://api.localstackfor.net/redirect/test-results/macos/opencode-dotnet/opencode-agents-ai/master) | `net10.0`, `net11.0` |
 
 ## Developing
 
