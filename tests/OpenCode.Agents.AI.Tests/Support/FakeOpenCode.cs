@@ -19,6 +19,9 @@ internal sealed class FakeOpenCode
         var events = Substitute.For<EventsClient>();
         Client.Sessions.Returns(Sessions);
         Client.Events.Returns(events);
+        Shells = Substitute.For<ShellsClient>();
+        Client.Shells.Returns(Shells);
+        AddShell("shell_test");
 #pragma warning disable OPENCODE001 // OpenCodeClient.Experimental and ExperimentalClient expose the SDK's experimental mocking seam.
         Experimental = Substitute.For<ExperimentalClient>();
         Client.Experimental.Returns(Experimental);
@@ -46,22 +49,37 @@ internal sealed class FakeOpenCode
 
     public SessionClient Session { get; }
 
+    public ShellsClient Shells { get; }
+
+    public ShellClient AddShell(string shellId)
+    {
+        var client = Substitute.For<ShellClient>();
+        Shells.GetShellClient(shellId).Returns(client);
+        client.RemoveAsync(Arg.Any<ShellRemoveRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new ShellRemoveResponse { Status = 204 });
+        return client;
+    }
+
 #pragma warning disable OPENCODE001 // ExperimentalClient is the documented experimental test seam.
     public ExperimentalClient Experimental { get; }
 #pragma warning restore OPENCODE001 // ExperimentalClient property declaration ends here.
 
-    public SessionClient AddSession(string sessionId, string? parentId)
+    public SessionClient AddSession(string sessionId, string? parentId, string directory = "test-directory")
     {
         var client = Substitute.For<SessionClient>();
         Sessions.GetSessionClient(sessionId).Returns(client);
         client.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
-            .Returns(new SessionResponse { Status = 200, Session = SessionInfo(sessionId, parentId) });
+            .Returns(new SessionResponse { Status = 200, Session = SessionInfo(sessionId, parentId, directory) });
         client.ReplyToPermissionAsync(Arg.Any<string>(), Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionPermissionReplyResponse { Status = 204 });
         client.ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionPermissionListResponse { Status = 200, Requests = [] });
         client.ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionInboxListResponse { Status = 200, Inbox = [] });
+        client.CancelInboxAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new SessionInboxCancelResponse { Status = 204 });
+        client.InterruptAsync(Arg.Any<SessionInterruptRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new SessionInterruptResponse { Status = 200, Interrupt = new SessionInterruptOutcome { Interrupted = true } });
         return client;
     }
 
@@ -116,7 +134,7 @@ internal sealed class FakeOpenCode
     private static string PromptId(SessionPromptRequest request) =>
         request.Id.Value ?? throw new InvalidOperationException("The prompt must provide its id.");
 
-    private static SessionInfo SessionInfo(string sessionId, string? parentId) => new()
+    internal static SessionInfo SessionInfo(string sessionId, string? parentId, string directory = "test-directory") => new()
     {
         Id = sessionId,
         ParentId = parentId,
@@ -130,6 +148,6 @@ internal sealed class FakeOpenCode
             Cache = new TokenUsageInfoCache { Read = 0, Write = 0 },
         },
         Time = new SessionInfoTime { Created = 1, Updated = 1 },
-        Location = new LocationPublicRef { Directory = "test-directory" },
+        Location = new LocationPublicRef { Directory = directory },
     };
 }

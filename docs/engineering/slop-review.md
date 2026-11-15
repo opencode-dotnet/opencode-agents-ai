@@ -171,8 +171,9 @@ A suppression silences a gate, so it is rare, visible and counted:
   removes, with its rule, file and channel; a suppression that no pull request body lists has no
   approval.
 - **A best-effort swallow** is a failure the caller cannot act on, such as cleanup after the
-  outcome is already decided. It uses a reason-bearing `[SlopwatchSuppress("SW003", "...")]` that
-  says where the failure is observed. A discarded `Try…` result is not a substitute.
+  outcome is already decided. It uses a reason-bearing `[SlopwatchSuppress("SW003", "...")]`, or
+  `// slopwatch-ignore: SW003 ...` where the attribute type is not available, that says where the
+  failure is observed. A discarded `Try…` result is not a substitute.
 - **A suppression that no longer suppresses anything is removed,** and so is one whose reason is
   no longer true.
 

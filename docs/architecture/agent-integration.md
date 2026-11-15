@@ -40,6 +40,12 @@ steering it into another prompt's work as the CLI does. This preserves prompt is
 this difference only with an approved change to that isolation contract, or if upstream changes
 make Queue cease to provide the boundary.
 
+Cancellation therefore gates root interruption on this run observing its exact delivery. The CLI
+interrupts without that gate (`packages/cli/src/run/noninteractive.ts:222,262–266` at v2.3.0): it
+steers, while before our queued prompt's delivery the active turn is certainly someone else's.
+Reverse this gate if delivery switches to steer. Queue isolates delivery order, not an interrupt's
+reach after delivery.
+
 Background selection uses the server's admitted `Prompt.Time.Created`: descendant jobs with
 `Time.Started >= Created` belong to the wait, without a running-only status filter. This is the
 CLI's time-boundary heuristic, not exclusive causal attribution: another client can start work in
@@ -141,13 +147,54 @@ A cancelled run interrupts the turn on the server. This is the one step beyond
 run would leave the turn running on the server. The step is dropped if OpenCode starts ending a
 turn when its client goes away.
 
-**Background cancellation (D4).** This wait cancels and joins local idle/readiness operations and
-closes the bus, but adds no inbox cancellation, child interruption, shell deletion or cancelling-wake
-handling. Those server mutations require an approved background-cancellation contract; reverse
-this difference when that slice lands. Explicit root interruption remains the separate canonical
-requirement above. The server-side effect of cancelling the HTTP idle wait is unverified: local
-cancellation proves neither that server jobs stopped nor that they continued. First-version
-cancellation is not complete until its server-action contract is implemented.
+**Finite cancellation sweep (M1, D4).** After acknowledged prompt admission, caller cancellation
+awaits a best-effort sweep, including when a cancelled streaming consumer disposes while holding an
+update. Before observed delivery, its sole action is cancelling that exact prompt's inbox id. After
+observed delivery it awaits that inbox cancellation, then one descendant-job snapshot, then starts
+and awaits all selected mutations concurrently: the root interrupt, each selected subagent child's
+interrupt, and each selected shell's removal. Selection uses `Time.Started >= Prompt.Time.Created`,
+without status or accepted message-less-decline exemptions. Images and unknown kinds receive no
+mutation. Shell removals share one root-session location lookup, started only if a shell is selected;
+a failed lookup skips every removal but not the interrupts. Removal addresses `ShellId`, not the job
+registry id, and destroys retained shell output. Interrupt requests omit Resume and do not retry an
+idle no-op. This partially mirrors `packages/cli/src/run/noninteractive.ts:262–275` at v2.3.0.
+
+The cleanup runs in at most four dependent stages: inbox cancel, job snapshot, root-location lookup,
+and the concurrent mutation group. Each stage is bounded only by the SDK's inactivity window
+(`NetworkTimeout`), which restarts on every bit of network progress (SDK 1.1.0
+`docs/guide/requests.md:209–210`). A server that stops responding delays caller cancellation by about
+four windows; a server that keeps answering slowly has no total bound. This is a known limit, not a
+wall-clock guarantee.
+
+Every cleanup call uses `CancellationToken.None` so the already-cancelled caller token cannot
+prevent sending it. Each action tolerates only `OpenCodeException`, including the SDK's own
+inactivity-timeout `OpenCodeTransportException`, and proceeds independently. Such failures never
+replace the caller's cancellation. Cancellation tolerates them while permission-reply failures
+surface because a lost reply blocks a session without a trace, whereas a failed cleanup leaves the
+caller already informed by cancellation. Independent local cleanup faults remain observable in
+their established order: the background waiter cancels and joins its idle/readiness operations
+before the sweep, and responder rejection finishes before the sweep; the bus closes afterwards.
+
+**Admission uncertainty (M3).** `PromptAsync` retains the caller token and arms the sweep only on a
+successful admission response. This differs from the CLI, which checks before sending but does not
+pass its abort signal to the prompt (`noninteractive.ts:214,217–224,261`): the GitHubCopilotAgent
+north star passes caller cancellation to its calls. Admission is idempotent and uninterruptible
+upstream (`packages/core/src/session/session.ts:155–167`), so a cancelled request can lose the
+response despite admission. Such a prompt receives no sweep. Reverse this divergence when the SDK
+or OpenCode supplies an admission result that survives a cancelled request.
+
+**No cancellation drain.** The sweep ends without following wakes or waiting for quiet, unlike the
+CLI (`noninteractive.ts:165–166,257–258,276–282`). The GitHubCopilotAgent north star returns control
+to the caller on cancellation; no second cancellation lifecycle is added. Reverse this divergence
+with an atomic tree-cancellation API or an approved cancellation-drain contract. Images, late jobs,
+later wakes and work whose discovery or mutation failed can survive. Time-based selection can
+include another client's work. A root interrupt targets the session's active execution, not a prompt
+identity; after delivery it can hit another client's turn, including in the background phase or just
+after our original turn ends, as in the CLI. The delivery gate removes only the certainly-foreign
+pre-delivery case. Delivery unseen during reconciliation or a permission callback before the turn
+reader runs, or racing cancellation after its delivery flag was read, can leave our own started turn
+running because inbox cancellation is then a no-op. Local idle-wait cancellation itself proves
+neither server termination nor continuation.
 
 ## Not supported
 
@@ -197,10 +244,11 @@ The limits and approved differences above qualify this list; it is not full CLI 
 10. Quietness checks selected jobs, remembered inboxes, then owned active drains — `packages/cli/src/run/noninteractive.ts:181–207`.
 11. Permission listening stays alive during idle waits and terminal-wake cycles — `packages/cli/src/run/noninteractive.ts:142–178,242–253`.
 12. CLI captures execution-end before queries and wakes only for remembered sessions — `packages/cli/src/run/noninteractive.ts:80,164–170,242–253`; our separately recorded remembered-or-owned widening still consumes each generation once.
+13. Cancellation partially mirrors the CLI's inbox, selected-child interrupt and shell-removal actions — `packages/cli/src/run/noninteractive.ts:262–275`; the delivery gate, admission uncertainty and no-drain boundary above qualify it.
 
 ### Experimental SDK declarations used by the provider
 
-The provider accepts OPENCODE001 for these SDK declarations in its background job-list and session-wait path; the inventory is audited against product source whenever a use changes.
+The provider accepts OPENCODE001 for these SDK declarations in its background job-list, session-wait and cancellation-sweep paths; the inventory is audited against product source whenever a use changes.
 
 ```text
 OpenCode.Sdk.OpenCodeClient.Experimental
@@ -211,6 +259,7 @@ OpenCode.Sdk.ExperimentalSessionWaitResponse
 OpenCode.Sdk.Models.IJobInfo
 OpenCode.Sdk.Models.JobTime
 OpenCode.Sdk.Models.JobSubagent
+OpenCode.Sdk.Models.JobShell
 ```
 
 The canonical inventory is embedded directly in the SDK-marker tripwire. The SDK's consumer opt-in

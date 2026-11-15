@@ -245,6 +245,7 @@ This product's critical rules:
 - A tool result closes its call.
 - With no callback a permission request is rejected.
 - The callback's reply reaches OpenCode unchanged.
+- A cancelled run interrupts the turn on the server.
 
 Mutation-tool scores are advisory. A tool that compiles mutants without the analyzer wall reports
 kills that the real build would reject, so its results are replayed through the full build before

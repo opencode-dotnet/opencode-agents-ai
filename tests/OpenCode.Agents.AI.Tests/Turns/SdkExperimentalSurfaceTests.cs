@@ -22,6 +22,7 @@ public sealed class SdkExperimentalSurfaceTests
         await Assert.That(names).IsNotEmpty();
         await Assert.That(names).Contains("OpenCode.Sdk.OpenCodeClient.Experimental");
         await Assert.That(names).Contains("OpenCode.Sdk.ExperimentalClient");
+        await Assert.That(names).Contains("OpenCode.Sdk.Models.JobShell");
 
         var declarations = names.Select(name => Resolve(assembly, name)).ToArray();
         await Assert.That(declarations.Select(declaration => declaration is Type type ? type.FullName : declaration.DeclaringType?.FullName + "." + declaration.Name))

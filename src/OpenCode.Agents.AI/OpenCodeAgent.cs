@@ -117,18 +117,29 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             Text = string.Join('\n', texts),
             Delivery = SessionInboxDelivery.Queue,
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
-        await permissions.ReconcileAsync(cancellationToken).ConfigureAwait(false);
-        await foreach (var update in ReadTurnAsync(events, typedSession, promptId, permissions, cancellationToken).ConfigureAwait(false))
+        var cancellation = new RunCancellation(_client, typedSession.SessionId!, promptId, admission.Prompt.Time.Created); // Successful admission has assigned the session id.
+        try
         {
-            yield return update;
-        }
+            await permissions.ReconcileAsync(cancellationToken).ConfigureAwait(false);
+            await foreach (var update in ReadTurnAsync(events, typedSession, promptId, permissions, cancellation, cancellationToken).ConfigureAwait(false))
+            {
+                yield return update;
+            }
 
-        await new BackgroundJobs(_client, typedSession.SessionId!, admission.Prompt.Time.Created, permissions) // Session admission has already assigned the id.
-            .WaitAsync(pump.Reader, cancellationToken).ConfigureAwait(false);
+            await new BackgroundJobs(_client, typedSession.SessionId!, admission.Prompt.Time.Created, permissions) // Session admission has already assigned the id.
+                .WaitAsync(pump.Reader, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                await cancellation.CancelAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     private async IAsyncEnumerable<AgentResponseUpdate> ReadTurnAsync(
-        IAsyncEnumerator<IEvent> events, OpenCodeAgentSession session, string promptId, PermissionResponder permissions,
+        IAsyncEnumerator<IEvent> events, OpenCodeAgentSession session, string promptId, PermissionResponder permissions, RunCancellation cancellation,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var mapper = new TurnEventMapper(Id, promptId);
@@ -155,24 +166,17 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
                     permissions.OnExecutionStarted(started.Data.SessionId);
                 }
 
-                var eventSessionId = current switch
-                {
-                    ISessionScopedEvent scoped => scoped.SessionId,
-                    FormCreated created => created.Data.Form.SessionId,
-                    FormReplied replied => replied.Data.SessionId,
-                    FormCancelled cancelled => cancelled.Data.SessionId,
-                    UnknownEvent unknown when unknown.Payload.TryGetProperty("data", out var data)
-                        && data.ValueKind == JsonValueKind.Object
-                        && data.TryGetProperty("sessionID", out var id)
-                        && id.ValueKind == JsonValueKind.String => id.GetString(),
-                    _ => null,
-                };
+                var eventSessionId = GetEventSessionId(current);
                 if (eventSessionId is not null && eventSessionId != session.SessionId)
                 {
                     continue;
                 }
 
-                delivered |= current is SessionInboxDelivered delivery && delivery.Data.InboxId == promptId;
+                if (current is SessionInboxDelivered delivery && delivery.Data.InboxId == promptId)
+                {
+                    delivered = true;
+                    cancellation.MarkDelivered();
+                }
                 if (!delivered)
                 {
                     continue;
@@ -208,6 +212,19 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             throw new InvalidOperationException("The event stream ended before the turn ended.");
         }
     }
+
+    private static string? GetEventSessionId(IEvent current) => current switch
+    {
+        ISessionScopedEvent scoped => scoped.SessionId,
+        FormCreated created => created.Data.Form.SessionId,
+        FormReplied replied => replied.Data.SessionId,
+        FormCancelled cancelled => cancelled.Data.SessionId,
+        UnknownEvent unknown when unknown.Payload.TryGetProperty("data", out var data)
+            && data.ValueKind == JsonValueKind.Object
+            && data.TryGetProperty("sessionID", out var id)
+            && id.ValueKind == JsonValueKind.String => id.GetString(),
+        _ => null,
+    };
 
     /// <inheritdoc/>
     protected override string? IdCore => _id;
