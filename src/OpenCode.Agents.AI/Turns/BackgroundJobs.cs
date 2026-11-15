@@ -9,6 +9,8 @@ namespace OpenCode.Agents.AI.Turns;
 
 internal sealed class BackgroundJobs(OpenCodeClient client, string sessionId, double admittedAt, PermissionResponder permissions)
 {
+    internal const string PendingWorkEofMessage = "The event stream ended before background work settled.";
+
     private readonly HashSet<string> _remembered = new(StringComparer.Ordinal) { sessionId };
     private readonly List<string> _sessions = [sessionId];
     private long _terminalGeneration;
@@ -67,9 +69,9 @@ internal sealed class BackgroundJobs(OpenCodeClient client, string sessionId, do
                 }
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException error) when (cancellationToken.IsCancellationRequested)
         {
-            failures.Add(new OperationCanceledException(cancellationToken));
+            failures.Add(new OperationCanceledException(error.Message, error, cancellationToken));
         }
         catch (Exception error)
         {
@@ -113,7 +115,7 @@ internal sealed class BackgroundJobs(OpenCodeClient client, string sessionId, do
     {
         if (_ended)
         {
-            throw new InvalidOperationException("The event stream ended before background work settled.");
+            throw new InvalidOperationException(PendingWorkEofMessage);
         }
     }
 
@@ -125,9 +127,9 @@ internal sealed class BackgroundJobs(OpenCodeClient client, string sessionId, do
             {
                 await permissions.RespondAsync(asked, cancellationToken).ConfigureAwait(false);
             }
-            else if (current is SessionExecutionStarted started)
+            else if (current is SessionExecutionStarted started && permissions.OnExecutionStarted(started.Data.SessionId))
             {
-                permissions.OnExecutionStarted(started.Data.SessionId);
+                _terminalGeneration++;
             }
 
             if (current is ISessionScopedEvent scoped && TurnOutcome.EndsTurn(current)

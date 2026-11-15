@@ -108,6 +108,14 @@ internal static class TurnEvents
         Data = new SessionExecutionSucceededData { SessionId = sessionId },
     };
 
+    public static SessionExecutionStarted ExecutionStarted(string sessionId) => new()
+    {
+        Id = "event_started",
+        Created = 1,
+        Durable = new SessionExecutionStartedDurable { AggregateId = sessionId, Seq = 1, Version = 1 },
+        Data = new SessionExecutionStartedData { SessionId = sessionId },
+    };
+
     public static IEvent Failed(string message, string sessionId = FakeOpenCode.SessionId) => new SessionExecutionFailed
     {
         Id = "event_failed",
@@ -144,7 +152,7 @@ internal static class TurnEvents
         };
     }
 
-#pragma warning disable OPENCODE001 // These builders construct the SDK's experimental wire records.
+#pragma warning disable OPENCODE001 // JobSubagent, JobShell, JobImage, UnknownJobInfo and JobStatus require the SDK's experimental model opt-in.
     public static JobSubagent SubagentJob(string id, string ownerSessionId, string childSessionId, double started, JobStatus status) => new()
     {
         Id = id,
@@ -155,9 +163,7 @@ internal static class TurnEvents
         Agent = "build",
         Description = "Background implementation",
     };
-#pragma warning restore OPENCODE001
 
-#pragma warning disable OPENCODE001 // The shell job builder uses the SDK's experimental model.
     public static JobShell ShellJob(string id, string sessionId, double started, JobStatus status) => new()
     {
         Id = id,
@@ -167,9 +173,7 @@ internal static class TurnEvents
         ShellId = "shell_test",
         Command = "build",
     };
-#pragma warning restore OPENCODE001
 
-#pragma warning disable OPENCODE001 // The image job builder uses the SDK's experimental model.
     public static JobImage ImageJob(string id, string sessionId, double started, JobStatus status) => new()
     {
         Id = id,
@@ -179,12 +183,10 @@ internal static class TurnEvents
         Path = "image.png",
         Model = "image-model",
     };
-#pragma warning restore OPENCODE001
 
-#pragma warning disable OPENCODE001 // The public unknown carrier preserves future experimental job shapes.
     public static UnknownJobInfo UnknownJob(string kind) => new(kind,
         JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal) { ["kind"] = kind }));
-#pragma warning restore OPENCODE001
+#pragma warning restore OPENCODE001 // JobSubagent, JobShell, JobImage, UnknownJobInfo and JobStatus builder declarations end here.
 
     public static SessionInboxSynthetic QueuedWake(string id, string sessionId) => new()
     {

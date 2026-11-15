@@ -6,6 +6,7 @@ using NSubstitute;
 using OpenCode.Agents.AI.Internal.Threading;
 using OpenCode.Agents.AI.Permissions;
 using OpenCode.Agents.AI.Tests.Support;
+using OpenCode.Agents.AI.Turns;
 using OpenCode.Sdk;
 using OpenCode.Sdk.Models;
 
@@ -482,7 +483,6 @@ public sealed class OpenCodeAgentRunTests
     {
         var trace = new List<string>();
         var pending = TurnEvents.PendingPermission("per_pending");
-        _fake.PendingPermissions(FakeOpenCode.SessionId, [pending]);
         _fake.Session.ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ => { trace.Add("list"); return new SessionPermissionListResponse { Status = 200, Requests = [pending] }; });
         _fake.OnPrompt(prompt =>
@@ -493,10 +493,10 @@ public sealed class OpenCodeAgentRunTests
         var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
         _fake.Session.ReplyToPermissionAsync("per_pending", reply, Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ => { trace.Add("reply"); return new SessionPermissionReplyResponse { Status = 204 }; });
-#pragma warning disable OPENCODE001 // Observe the completion check after the original turn's mapped output.
+#pragma warning disable OPENCODE001 // ExperimentalClient.ListJobsAsync arranges the completion-check trace.
         _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ => { trace.Add("background check"); return new ExperimentalJobListResponse { Status = 200, Jobs = [] }; });
-#pragma warning restore OPENCODE001
+#pragma warning restore OPENCODE001 // ExperimentalClient.ListJobsAsync arrangement ends here.
         await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
         {
             OnPermissionRequest = (request, _) => { trace.Add("callback:" + request.Id); return new(reply); },
@@ -517,7 +517,6 @@ public sealed class OpenCodeAgentRunTests
         await _fake.Session.Received(1).ReplyToPermissionAsync("per_pending", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
     }
 
-#pragma warning disable OPENCODE001 // The integration test observes entry into the SDK's background wait path.
     [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
@@ -537,6 +536,7 @@ public sealed class OpenCodeAgentRunTests
                 ? [delivery, TurnEvents.PermissionAsked("per_child", "child"), TurnEvents.Succeeded("child"), originalText, originalEnd]
                 : [delivery, originalText, originalEnd];
         });
+#pragma warning disable OPENCODE001 // JobStatus.Running and ExperimentalClient.WaitForSessionAsync arrange the background entry.
         _fake.Jobs([TurnEvents.SubagentJob("job", FakeOpenCode.SessionId, "child", 100, JobStatus.Running)]);
         _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -545,6 +545,7 @@ public sealed class OpenCodeAgentRunTests
                 if (!declinedBeforeEnd) { _fake.Emit(TurnEvents.PermissionAsked("per_child", "child")); }
                 return new ExperimentalSessionWaitResponse { Status = 204 };
             });
+#pragma warning restore OPENCODE001 // JobStatus.Running and ExperimentalClient.WaitForSessionAsync arrangement ends here.
         child.ReplyToPermissionAsync("per_child", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
@@ -563,6 +564,7 @@ public sealed class OpenCodeAgentRunTests
         try
         {
             await Assert.That(await Task.WhenAny(entered.Task, outcome)).IsSameReferenceAs(entered.Task);
+            if (declinedBeforeEnd) { _fake.EndBus(); }
             await Assert.That(await outcome).IsNull();
         }
         finally
@@ -581,9 +583,7 @@ public sealed class OpenCodeAgentRunTests
         }
         else { await Assert.That(actual).IsSameReferenceAs(reply); }
     }
-#pragma warning restore OPENCODE001
 
-#pragma warning disable OPENCODE001 // Admission time is a server field, not the local time when the turn ends.
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -593,11 +593,13 @@ public sealed class OpenCodeAgentRunTests
         var releases = new List<TaskCompletionSource<bool>>();
         _fake.AddSession("boundary", FakeOpenCode.SessionId);
         _fake.AddSession("newer", FakeOpenCode.SessionId);
+#pragma warning disable OPENCODE001 // JobStatus.Running arranges JobSubagent rows around the admission boundary.
         _fake.Jobs([
             TurnEvents.SubagentJob("old", FakeOpenCode.SessionId, "old_child", 99, JobStatus.Running),
             TurnEvents.SubagentJob("boundary", FakeOpenCode.SessionId, "boundary", 100, JobStatus.Running),
             TurnEvents.SubagentJob("newer", FakeOpenCode.SessionId, "newer", 101, JobStatus.Running),
         ]);
+#pragma warning restore OPENCODE001 // JobStatus.Running and JobSubagent arrangement ends here.
         var trace = new List<string>();
         foreach (var id in new[] { FakeOpenCode.SessionId, "boundary", "newer" })
         {
@@ -608,18 +610,15 @@ public sealed class OpenCodeAgentRunTests
         [
             TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.PermissionAsked("boundary", "boundary"), TurnEvents.PermissionAsked("newer", "newer"),
             TurnEvents.PermissionAsked("turn_gate"),
-            restarted ? new SessionExecutionStarted
-            {
-                Id = "started", Created = 101,
-                Durable = new SessionExecutionStartedDurable { AggregateId = "boundary", Seq = 1, Version = 1 },
-                Data = new SessionExecutionStartedData { SessionId = "boundary" },
-            } : TurnEvents.Succeeded("boundary"),
+            restarted ? TurnEvents.ExecutionStarted("boundary") : TurnEvents.Succeeded("boundary"),
             TurnEvents.Text("original"), TurnEvents.Succeeded(),
         ], admittedAt: 100);
         if (restarted)
         {
+#pragma warning disable OPENCODE001 // ExperimentalClient.ListJobsAsync arranges the restarted child's retained row.
             _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
                 .Returns(_ => { _fake.Emit(TurnEvents.PermissionAsked("checkpoint")); return new ExperimentalJobListResponse { Status = 200, Jobs = [TurnEvents.SubagentJob("boundary", FakeOpenCode.SessionId, "boundary", 100, JobStatus.Running)] }; });
+#pragma warning restore OPENCODE001 // ExperimentalClient.ListJobsAsync arrangement ends here.
         }
         await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
         {
@@ -647,7 +646,7 @@ public sealed class OpenCodeAgentRunTests
             foreach (var release in releases) { release.TrySetResult(true); }
             if (restarted)
             {
-                await Assert.That((await result)?.Message).IsEqualTo("The event stream ended before background work settled.");
+                await Assert.That((await result)?.Message).IsEqualTo(BackgroundJobs.PendingWorkEofMessage);
                 await _fake.Session.Received(1).ReplyToPermissionAsync("checkpoint", Arg.Is<SessionPermissionReplyRequest>(reply => reply.Decision == PermissionReply.Once), OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
             }
             else
@@ -663,9 +662,7 @@ public sealed class OpenCodeAgentRunTests
             await result;
         }
     }
-#pragma warning restore OPENCODE001
 
-#pragma warning disable OPENCODE001 // Later job outcomes do not replace the original turn's outcome.
     [Test]
     [Arguments("success")]
     [Arguments("user")]
@@ -683,6 +680,7 @@ public sealed class OpenCodeAgentRunTests
         };
         _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("original"), end]);
         var checks = 0;
+#pragma warning disable OPENCODE001 // ExperimentalClient.ListJobsAsync and JobStatus.Error arrange the later job outcome.
         _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
@@ -690,6 +688,7 @@ public sealed class OpenCodeAgentRunTests
                 if (checks == 1) { _fake.Emit(TurnEvents.PermissionAsked("late", "child")); }
                 return new ExperimentalJobListResponse { Status = 200, Jobs = checks == 1 ? [TurnEvents.SubagentJob("job", FakeOpenCode.SessionId, "child", 100, JobStatus.Error)] : [] };
             });
+#pragma warning restore OPENCODE001 // ExperimentalClient.ListJobsAsync and JobStatus.Error arrangement ends here.
         var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
         await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
         {
@@ -714,16 +713,16 @@ public sealed class OpenCodeAgentRunTests
             await _fake.Sessions.GetSessionClient("child").Received(1).ReplyToPermissionAsync("late", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
         }
     }
-#pragma warning restore OPENCODE001
 
-#pragma warning disable OPENCODE001 // The SDK's failure must remain observable after original output has streamed.
     [Test]
     public async Task RunAsync_Should_Surface_Background_Failure_And_Close_The_Bus()
     {
         var failure = new OpenCodeTransportException("background wait failed");
         _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("original"), TurnEvents.Succeeded()]);
+#pragma warning disable OPENCODE001 // ExperimentalClient.WaitForSessionAsync arranges the background failure.
         _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromException<ExperimentalSessionWaitResponse>(failure));
+#pragma warning restore OPENCODE001 // ExperimentalClient.WaitForSessionAsync arrangement ends here.
         await using var agent = new OpenCodeAgent(_fake.Client);
         var updates = new List<AgentResponseUpdate>();
 
@@ -732,21 +731,30 @@ public sealed class OpenCodeAgentRunTests
         await Assert.That(error).IsSameReferenceAs(failure);
         await AssertOriginalOutputAndClosedBusAsync(updates);
     }
-#pragma warning restore OPENCODE001
 
-#pragma warning disable OPENCODE001 // Cancellation must leave the experimental idle/check cycle and close the bus.
     [Test]
     public async Task RunAsync_Should_Cancel_A_Background_Wait_And_Close_The_Bus()
     {
         using var cancellation = new CancellationTokenSource();
         var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("original"), TurnEvents.Succeeded()]);
+        var waitSessions = new List<string>();
+        var waitOptions = new List<OpenCodeRequestOptions?>();
+#pragma warning disable OPENCODE001 // ExperimentalClient.WaitForSessionAsync and ListJobsAsync arrange the cancellation entry.
+        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                waitSessions.Add(call.Arg<string>());
+                waitOptions.Add(call.ArgAt<OpenCodeRequestOptions?>(1));
+                return new ExperimentalSessionWaitResponse { Status = 204 };
+            });
         _fake.Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
                 _fake.Emit(TurnEvents.PermissionAsked("marker"));
                 return new ExperimentalJobListResponse { Status = 200, Jobs = [TurnEvents.ShellJob("shell", FakeOpenCode.SessionId, 100, JobStatus.Running)] };
             });
+#pragma warning restore OPENCODE001 // ExperimentalClient.WaitForSessionAsync and ListJobsAsync arrangement ends here.
         var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
         await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
         {
@@ -767,11 +775,11 @@ public sealed class OpenCodeAgentRunTests
             await result;
         }
 
-        await _fake.Experimental.Received(1).WaitForSessionAsync(FakeOpenCode.SessionId, null, Arg.Any<CancellationToken>());
+        await Assert.That(waitSessions).IsEquivalentTo([FakeOpenCode.SessionId], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(waitOptions).IsEquivalentTo(new OpenCodeRequestOptions?[] { null }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
         await _fake.Session.Received(1).ReplyToPermissionAsync("marker", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
         await AssertOriginalOutputAndClosedBusAsync(updates);
     }
-#pragma warning restore OPENCODE001
 
     private async Task AssertOriginalOutputAndClosedBusAsync(List<AgentResponseUpdate> updates)
     {

@@ -17,7 +17,7 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
 
     public bool HasRejectedWithoutMessage(string requestSessionId) => _rejectedWithoutMessage.Contains(requestSessionId);
 
-    public void OnExecutionStarted(string sessionId) => _rejectedWithoutMessage.Remove(sessionId);
+    public bool OnExecutionStarted(string startedSessionId) => _rejectedWithoutMessage.Remove(startedSessionId);
 
     public async ValueTask ReconcileAsync(CancellationToken cancellationToken)
     {

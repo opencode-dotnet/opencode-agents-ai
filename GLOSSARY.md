@@ -48,7 +48,9 @@ An MAF workflow execution.
 _Avoid_: run (when ambiguous), agent run (when referring to a workflow execution)
 
 **Turn**:
-The work that one prompt starts in an OpenCode session; it ends when it succeeds, fails or is interrupted.
+The work that one prompt starts in its own OpenCode session, ending on exactly one turn-end event
+when it succeeds, fails or is interrupted. Background work the prompt started can outlive its turn
+([run boundary](docs/architecture/agent-integration.md#a-run)).
 _Avoid_: execution, run (when referring to the OpenCode side)
 
 **Permission request**:

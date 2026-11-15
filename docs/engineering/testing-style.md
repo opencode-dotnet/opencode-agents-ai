@@ -43,8 +43,11 @@ sized to need:
 - A helper or fixture used by one slice lives in that slice's `Support/` or `Fixtures/`. Helpers
   and fixtures used by several slices stay in the test project's root `Support/` and `Fixtures/`.
   Embedded fixtures retain their `Fixtures.` resource-name prefix through explicit `LogicalName`
-   metadata. There is no separate test-support project and no shared test library.
-  Exception: SdkExperimentalSurfaceTests embeds the canonical docs/architecture/agent-integration.md as Fixtures.AgentIntegration.md and reads that named resource directly; it does not copy the document into Fixtures or create a resource-loader helper. Other fixtures retain the fixture-folder and helper conventions.
+  metadata. There is no separate test-support project and no shared test library.
+  Exception: SdkExperimentalSurfaceTests embeds the canonical docs/architecture/agent-integration.md
+  as Fixtures.AgentIntegration.md and reads that named resource directly; it does not copy the
+  document into Fixtures or create a resource-loader helper. Other fixtures retain the
+  fixture-folder and helper conventions.
 - The mirror rule also applies to test infrastructure: `Support/X.cs` is tested in
   `Support/XTests.cs`. A subject with several test files keeps those files beside the subject.
 
@@ -62,8 +65,9 @@ analyzer enforces it wherever an abstractions assembly is referenced — even te
 - Raw `System.IO` never appears in test code, and no second filesystem fake is ever
   introduced — one canonical fake per repository. Fault injection decorates that fake: an
   NSubstitute `IFileSystem` that delegates to the Testably double and fails the chosen calls is
-   the same fake with a failure, not a second one.
-  Exception: a `StreamReader` over a `Stream` obtained from an embedded resource or from `IFileSystem` is permitted; filesystem acquisition remains through `IFileSystem`.
+  the same fake with a failure, not a second one.
+  Exception: a `StreamReader` over a `Stream` obtained from an embedded resource or from
+  `IFileSystem` is permitted; filesystem acquisition remains through `IFileSystem`.
 - Tests consume `IFileSystem` directly. Product code that touches the filesystem does so through
   an injected `IFileSystem` seam (`coding-style.md` §2), so its test double is the same fake.
 
@@ -75,8 +79,11 @@ test body states *intent*; the data it runs on lives in one of three sanctioned 
 1. **Embedded fixture files** — in the `Fixtures/` folder of the slice that uses them, or the test
    project's root `Fixtures/` when several slices share them, loaded through a resource-loader helper
    by name. The default for wire-shaped data:
-    one small file per quirk, named for the construct it isolates, reviewable on its own.
-   Exception: SdkExperimentalSurfaceTests embeds the canonical docs/architecture/agent-integration.md as Fixtures.AgentIntegration.md and reads that named resource directly; it does not copy the document into Fixtures or create a resource-loader helper. Other fixtures retain the fixture-folder and helper conventions.
+   one small file per quirk, named for the construct it isolates, reviewable on its own.
+   Exception: SdkExperimentalSurfaceTests embeds the canonical docs/architecture/agent-integration.md
+   as Fixtures.AgentIntegration.md and reads that named resource directly; it does not copy the
+   document into Fixtures or create a resource-loader helper. Other fixtures retain the
+   fixture-folder and helper conventions.
 2. **Typed builders** — for variation families where files would multiply: red tests
    composing a valid base plus exactly one offending construct through the builder. The
    variation reads as a domain statement in the test body, not as a diff between two
@@ -197,7 +204,8 @@ service; a fixture that cannot own its server fails.
 
 - Inline data dumps (§3), or the same literal appearing in two test methods.
 - Real file I/O in a unit or contract test; raw `System.IO` anywhere in tests.
-  Exception: a `StreamReader` over a `Stream` obtained from an embedded resource or from `IFileSystem` is permitted; filesystem acquisition remains through `IFileSystem`.
+  Exception: a `StreamReader` over a `Stream` obtained from an embedded resource or from
+  `IFileSystem` is permitted; filesystem acquisition remains through `IFileSystem`.
 - `Skip`. This document sanctions no skip mechanism; a missing prerequisite is an instructive
   failure (§6). A platform-gated leg is not a skip: it asserts the arm the platform can reach,
   names the branch it took, and both branches assert.
@@ -208,7 +216,9 @@ service; a fixture that cannot own its server fails.
   in case" — deleted code is recoverable from git.
 - Testing library internals (MAF, the OpenCode .NET SDK, TUnit itself, the BCL)
   — test our rules at our boundaries.
-  Exception: SdkExperimentalSurfaceTests may inspect only ExperimentalAttribute metadata and the OPENCODE001 diagnostic id on SDK declarations in the provider's canonical usage inventory; SDK implementation behavior remains outside this exception.
+  Exception: SdkExperimentalSurfaceTests may inspect only ExperimentalAttribute metadata and the
+  OPENCODE001 diagnostic id on SDK declarations in the provider's canonical usage inventory; SDK
+  implementation behavior remains outside this exception.
 
 ## 8. Mutation proofs
 

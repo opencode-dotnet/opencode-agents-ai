@@ -587,7 +587,7 @@ public sealed class PermissionResponderTests
         var cleanup = Replies(_fake.Session)[1];
         var reply = (SessionPermissionReplyRequest)cleanup.GetArguments()[1]!; // The SDK requires a reply body.
         await Assert.That(reply.Decision).IsEqualTo(PermissionReply.Reject);
-        await Assert.That(reply.Message.Value).IsEqualTo("The permission handler failed, so this request was rejected.");
+        await Assert.That(reply.Message.Value).IsEqualTo(PermissionResponder.HandlerFailedMessage);
         await Assert.That(cleanup.GetArguments()[3]).IsEqualTo(CancellationToken.None);
     }
 

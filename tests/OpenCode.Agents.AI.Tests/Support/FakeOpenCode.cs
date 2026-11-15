@@ -19,15 +19,14 @@ internal sealed class FakeOpenCode
         var events = Substitute.For<EventsClient>();
         Client.Sessions.Returns(Sessions);
         Client.Events.Returns(events);
-        // The SDK requires a narrow opt-in for its experimental mocking seam.
-#pragma warning disable OPENCODE001
+#pragma warning disable OPENCODE001 // OpenCodeClient.Experimental and ExperimentalClient expose the SDK's experimental mocking seam.
         Experimental = Substitute.For<ExperimentalClient>();
         Client.Experimental.Returns(Experimental);
         Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new ExperimentalJobListResponse { Status = 200, Jobs = [] });
         Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new ExperimentalSessionWaitResponse { Status = 204 });
-#pragma warning restore OPENCODE001
+#pragma warning restore OPENCODE001 // OpenCodeClient.Experimental and ExperimentalClient arrangement ends here.
         Active(new Dictionary<string, SessionActive>(StringComparer.Ordinal));
         Sessions.CreateSessionAsync(Arg.Any<SessionCreateRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionCreateResponse
@@ -47,9 +46,9 @@ internal sealed class FakeOpenCode
 
     public SessionClient Session { get; }
 
-#pragma warning disable OPENCODE001 // The SDK's experimental client is the documented test seam.
+#pragma warning disable OPENCODE001 // ExperimentalClient is the documented experimental test seam.
     public ExperimentalClient Experimental { get; }
-#pragma warning restore OPENCODE001
+#pragma warning restore OPENCODE001 // ExperimentalClient property declaration ends here.
 
     public SessionClient AddSession(string sessionId, string? parentId)
     {
@@ -104,15 +103,11 @@ internal sealed class FakeOpenCode
         Sessions.GetSessionClient(sessionId).ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionPermissionListResponse { Status = 200, Requests = requests });
 
-#pragma warning disable OPENCODE001 // Typed experimental records exercise the published client seam.
+#pragma warning disable OPENCODE001 // IJobInfo and ExperimentalClient.ListJobsAsync declare the job snapshot arrangement.
     public void Jobs(IReadOnlyList<IJobInfo> jobs) =>
         Experimental.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new ExperimentalJobListResponse { Status = 200, Jobs = jobs });
-#pragma warning restore OPENCODE001
-
-    public void Inbox(string sessionId, IReadOnlyList<ISessionInboxInfo> inbox) =>
-        Sessions.GetSessionClient(sessionId).ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
-            .Returns(new SessionInboxListResponse { Status = 200, Inbox = inbox });
+#pragma warning restore OPENCODE001 // IJobInfo and ExperimentalClient.ListJobsAsync arrangement ends here.
 
     public void Active(IReadOnlyDictionary<string, SessionActive> active) =>
         Sessions.GetActiveAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())

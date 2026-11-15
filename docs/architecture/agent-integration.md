@@ -69,6 +69,11 @@ The following approved differences delimit this wait:
   failures propagate rather than becoming empty lists as in the CLI. The pinned server supports
   these endpoints; false emptiness can strand work. Reverse only with an equivalent recorded
   recovery path. Wait, inbox and active failures already propagate upstream.
+- **Defensive quiet stream end.** When the event stream ends quietly and the background check is
+  quiet, the run returns; OpenCode's CLI throws (`packages/cli/src/run/noninteractive.ts:148–151`
+  at v2.3.0). The SDK 1.1.0 live stream does not end normally: it reconnects or throws, as its
+  `docs/guide/streaming.md` specifies, so a quiet end is defensive only. Reverse this difference
+  when the SDK gives a normal stream end a meaning.
 
 ### Accepted message-less declines
 
@@ -78,7 +83,9 @@ Absent, null and empty messages qualify; whitespace is feedback. Typed not-found
 unsuccessful replies, messaged Rejects and another client's decisions do not create this per-run
 record. Owner and child inboxes and owned active work still count. A drained
 `session.execution.started` for that session clears its record in either the original or background
-phase. No original-turn terminal history, status inspection or connection inference participates.
+phase. Clearing a record in the background phase authorizes exactly one recheck, including when
+the start arrives during a quietness check. No original-turn terminal history, status inspection
+or connection inference participates.
 
 This divergence addresses [upstream issue 54180](https://github.com/anomalyco/opencode/issues/54180):
 an accepted message-less decline normally self-interrupts the child, without reporting to its
