@@ -649,6 +649,193 @@ public sealed class PermissionResponderTests
         }
     }
 
+    [Test]
+    public async Task ReconcileLocationAsync_Should_Answer_Only_Owned_Requests_In_Returned_Order()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var child = _fake.AddSession("child", FakeOpenCode.SessionId);
+        var grandchild = _fake.AddSession("grandchild", "child");
+        var foreign = _fake.AddSession("foreign", parentId: null);
+        _fake.AddSession("negative", parentId: null);
+        var root = FakeOpenCode.SessionInfo(FakeOpenCode.SessionId, parentId: null, directory: "root-location");
+        _fake.Session.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new SessionResponse { Status = 200, Session = root });
+        PermissionRequest[] requests = [Request("child_b-request", "child"), Request("foreign-request", "foreign"),
+            Request("root_z-request"), Request("grandchild-request", "grandchild"), Request("root_a-request"), Request("negative-request", "negative")];
+        LocationPermissions(requests);
+        var received = new List<PermissionRequest>();
+        var reply = Reply("feedback");
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, token) =>
+        {
+            received.Add(request);
+            return new(reply);
+        });
+        await Assert.That(await responder.OwnsAsync("negative", cancellation.Token)).IsFalse();
+        var negative = _fake.AddSession("negative", FakeOpenCode.SessionId);
+
+        await responder.ReconcileLocationAsync(_fake.Permissions, cancellation.Token);
+
+        await Assert.That(received.Select(request => request.Id)).IsEquivalentTo(
+            ["child_b-request", "root_z-request", "grandchild-request", "root_a-request"], CollectionOrdering.Matching);
+        for (var index = 0; index < received.Count; index++)
+        {
+            var expected = requests[new[] { 0, 2, 3, 4 }[index]];
+            await Assert.That(received[index]).IsSameReferenceAs(expected);
+            await _fake.Sessions.GetSessionClient(expected.SessionId).Received(1)
+                .ReplyToPermissionAsync(expected.Id, reply, OpenCodeRequestOptions.NoThrow, cancellation.Token);
+        }
+        await Assert.That(ReplyIds(child)).IsEquivalentTo(["child_b-request"], CollectionOrdering.Matching);
+        await Assert.That(ReplyIds(grandchild)).IsEquivalentTo(["grandchild-request"], CollectionOrdering.Matching);
+        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["root_z-request", "root_a-request"], CollectionOrdering.Matching);
+        await Assert.That(Replies(foreign)).IsEmpty();
+        await Assert.That(Replies(negative)).IsEmpty();
+        await negative.DidNotReceive().GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+        await _fake.Session.Received(1).GetAsync(null, cancellation.Token);
+        await _fake.Permissions.Received(1).ListRequestsAsync(Arg.Is<PermissionRequestListRequest>(query => query.Location != null && query.Location.Directory == "root-location"), null, cancellation.Token);
+        await child.DidNotReceive().ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+        await Assert.That(_fake.Sessions.ReceivedCalls().Where(call => call.GetMethodInfo().Name == nameof(SessionsClient.ListSessionsAsync))).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ReconcileLocationAsync_Should_Attempt_An_Id_Once_Across_Snapshot_And_Live_Events(bool snapshotFirst)
+    {
+        var child = _fake.AddSession("child", FakeOpenCode.SessionId);
+        var moved = _fake.AddSession("moved", FakeOpenCode.SessionId, directory: "other-location");
+        LocationPermissions([Request("shared"), Request("fresh", "child")]);
+        child.ReplyToPermissionAsync("fresh", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(ReplyError("not-found", "fresh"));
+        var ids = new List<string>();
+        var reply = Reply("feedback");
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
+        {
+            ids.Add(request.Id);
+            return new(reply);
+        });
+        if (!snapshotFirst) { await responder.RespondAsync(Request("shared"), CancellationToken.None); }
+
+        await responder.ReconcileLocationAsync(_fake.Permissions, CancellationToken.None);
+        await responder.RespondAsync(TurnEvents.PermissionAsked("shared"), CancellationToken.None);
+        await responder.RespondAsync(Request("fresh", "child"), CancellationToken.None);
+
+        await Assert.That(ids).IsEquivalentTo(["shared", "fresh"], CollectionOrdering.Matching);
+        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["shared"], CollectionOrdering.Matching);
+        await Assert.That(ReplyIds(child)).IsEquivalentTo(["fresh"], CollectionOrdering.Matching);
+        await _fake.Session.Received(1).ReplyToPermissionAsync("shared", reply, OpenCodeRequestOptions.NoThrow, CancellationToken.None);
+        await child.Received(1).ReplyToPermissionAsync("fresh", reply, OpenCodeRequestOptions.NoThrow, CancellationToken.None);
+        await moved.DidNotReceive().GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+        await moved.DidNotReceive().ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+        await _fake.Permissions.Received(1).ListRequestsAsync(Arg.Is<PermissionRequestListRequest>(query => query.Location != null && query.Location.Directory == "test-directory"), null, CancellationToken.None);
+    }
+
+    [Test]
+    [Arguments("root")]
+    [Arguments("list")]
+    [Arguments("callback")]
+    [Arguments("reply")]
+    [Arguments("rejection")]
+    [Arguments("joined-reply")]
+    [Arguments("serial-callback")]
+    public async Task ReconcileLocationAsync_Should_Surface_Failures_And_Join_Replies(string stage)
+    {
+        if (stage is "joined-reply" or "serial-callback")
+        {
+            await AssertLocationJoinAsync(stage);
+            return;
+        }
+        using var cancellation = new CancellationTokenSource();
+        var failure = new OpenCodeTransportException("location pass failed");
+        var rejection = new OpenCodeTransportException("rejection failed");
+        LocationPermissions([Request("first"), Request("second")]);
+        if (stage == "root")
+        {
+            _fake.Session.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(Task.FromException<SessionResponse>(failure));
+        }
+        if (stage == "list")
+        {
+            _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromException<PermissionRequestListResponse>(failure));
+        }
+        if (stage is "reply" or "rejection") { FailReply(_fake.Session, "first", stage == "reply" ? failure : rejection); }
+        var callbacks = new List<string>();
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
+        {
+            callbacks.Add(request.Id);
+            return stage is "callback" or "rejection" ? throw failure : new(Reply("feedback"));
+        });
+
+        var error = await CaptureFailureAsync(() => responder.ReconcileLocationAsync(_fake.Permissions, cancellation.Token).AsTask());
+
+        if (stage == "rejection")
+        {
+            var aggregate = (await Assert.That(error).IsTypeOf<AggregateException>())!; // The assertion establishes the aggregate.
+            await Assert.That(aggregate.InnerExceptions).IsEquivalentTo(new Exception[] { failure, rejection }, CollectionOrdering.Matching);
+            await Assert.That(aggregate.InnerExceptions[0]).IsSameReferenceAs(failure);
+            await Assert.That(aggregate.InnerExceptions[1]).IsSameReferenceAs(rejection);
+        }
+        else { await Assert.That(error).IsSameReferenceAs(failure); }
+        string[] expected = stage is "root" or "list" ? [] : ["first"];
+        await Assert.That(callbacks).IsEquivalentTo(expected, CollectionOrdering.Matching);
+        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(expected, CollectionOrdering.Matching);
+        await _fake.Session.Received(1).GetAsync(null, cancellation.Token);
+        await Assert.That(_fake.Permissions.ReceivedCalls().Count(call => call.GetMethodInfo().Name == nameof(PermissionsClient.ListRequestsAsync))).IsEqualTo(stage == "root" ? 0 : 1);
+        if (expected.Length != 0)
+        {
+            await Assert.That(Replies(_fake.Session).Single().GetArguments()[3]).IsEqualTo(stage == "reply" ? cancellation.Token : CancellationToken.None);
+        }
+    }
+
+    private void LocationPermissions(IReadOnlyList<PermissionRequest> requests) =>
+        _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new PermissionRequestListResponse { Status = 200, Requests = requests, Location = new LocationPublicRef { Directory = "test-directory" } });
+
+    private async Task AssertLocationJoinAsync(string stage)
+    {
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releases = new List<TaskCompletionSource<bool>>();
+        var callbacks = new List<string>();
+        var reply = Reply("feedback");
+        LocationPermissions([Request("first"), Request("second")]);
+        if (stage == "joined-reply")
+        {
+            _fake.Session.ReplyToPermissionAsync("first", reply, OpenCodeRequestOptions.NoThrow, CancellationToken.None).Returns(async _ =>
+            {
+                await HoldFirstLocationOperationAsync(entered, releases);
+                return new SessionPermissionReplyResponse { Status = 204 };
+            });
+        }
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, async (request, _) =>
+        {
+            callbacks.Add(request.Id);
+            if (stage == "serial-callback" && request.Id == "first") { await HoldFirstLocationOperationAsync(entered, releases); }
+            return reply;
+        });
+        var outcome = CaptureFailureAsync(() => responder.ReconcileLocationAsync(_fake.Permissions, CancellationToken.None).AsTask());
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, outcome)).IsSameReferenceAs(entered.Task);
+            await Assert.That(callbacks).IsEquivalentTo(["first"], CollectionOrdering.Matching);
+            await Assert.That(outcome.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            foreach (var release in releases) { release.TrySetResult(true); }
+            await outcome;
+        }
+        await Assert.That(await outcome).IsNull();
+        await Assert.That(callbacks).IsEquivalentTo(["first", "second"], CollectionOrdering.Matching);
+        await Assert.That(ReplyIds(_fake.Session)).IsEquivalentTo(["first", "second"], CollectionOrdering.Matching);
+    }
+
+    private static async Task HoldFirstLocationOperationAsync(TaskCompletionSource<bool> entered, List<TaskCompletionSource<bool>> releases)
+    {
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        releases.Add(release);
+        entered.TrySetResult(true);
+        await release.Task;
+    }
+
     private static PermissionRequest Request(string id = "per_1", string sessionId = FakeOpenCode.SessionId) => new()
     {
         Id = id,

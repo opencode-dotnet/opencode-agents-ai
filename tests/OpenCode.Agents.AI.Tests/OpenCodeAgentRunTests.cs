@@ -714,7 +714,27 @@ public sealed class OpenCodeAgentRunTests
     [Test]
     public async Task RunAsync_Should_Not_End_On_Server_Connected()
     {
-        await Assert.That(await TextAfterAsync(TurnEvents.Connected())).IsEqualTo("a");
+        _fake.OnPrompt(prompt =>
+        {
+            var user = TurnEvents.StoredUser(prompt.Id.Value!);
+            var assistant = TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = "" }]);
+            _fake.Session.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(new SessionMessageListResponse { Status = 200, Cursor = new ListCursor(), Messages = [assistant, user] },
+                    new SessionMessageListResponse
+                    {
+                        Status = 200,
+                        Cursor = new ListCursor(),
+                        Messages = [TurnEvents.StoredIdle("end", SessionMessageIdleOutcome.Succeeded),
+                        assistant with { Content = [new SessionMessageAssistantText { Text = "a" }] }, user]
+                    });
+            return FiniteEvents([TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Connected(), TurnEvents.TextEnded("a"), TurnEvents.Succeeded()]);
+        });
+        await using var agent = new OpenCodeAgent(_fake.Client);
+
+        var updates = await UpdatesAsync(agent);
+
+        await Assert.That(TextChunks(updates)).IsEquivalentTo(["a"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await AssertRefreshCallsAsync(messageQueries: 2);
     }
 
     [Test]
@@ -1218,6 +1238,513 @@ public sealed class OpenCodeAgentRunTests
         await _fake.Session.Received(1).ReplyToPermissionAsync("marker", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
         await _fake.Session.Received(1).InterruptAsync(null, null, CancellationToken.None);
         await AssertOriginalOutputAndClosedBusAsync(updates);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    public async Task RunAsync_Should_Finish_From_The_Refresh_When_The_Turn_Ended_During_A_Reconnect(bool unknown, bool rawIdle)
+    {
+        ISessionMessageInfo idle = rawIdle
+            ? new UnknownSessionMessageInfo("idle", JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal) { ["type"] = "idle" }))
+            : TurnEvents.StoredIdle("idle_original", SessionMessageIdleOutcome.Succeeded);
+        var marker = unknown ? new UnknownEvent("server.connected", JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal) { ["type"] = "server.connected" })) : TurnEvents.Connected();
+        _fake.OnPrompt(prompt =>
+        {
+            StoredMessages([idle, TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = "ab" }]), TurnEvents.StoredUser(prompt.Id.Value!)]);
+            return FiniteEvents([TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("a"), marker]);
+        });
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await CaptureRunFailureAsync(updates);
+
+        await Assert.That(error).IsNull();
+        await Assert.That(TextChunks(updates)).IsEquivalentTo(["a", "b"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(string.Concat(TextChunks(updates))).IsEqualTo("ab");
+        await Assert.That(updates[^1].Contents.Single().RawRepresentation).IsSameReferenceAs(idle);
+        await _fake.Session.Received(1).PromptAsync(Arg.Any<SessionPromptRequest>(), null, Arg.Any<CancellationToken>());
+        await AssertRefreshCallsAsync(messageQueries: 1);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    [Test]
+    [Arguments("recovered")]
+    [Arguments("queued")]
+    [Arguments("open")]
+    public async Task RunAsync_Should_Recover_A_Missed_Delivery_Without_Reading_Another_Turn(string scenario)
+    {
+        _fake.OnPrompt(prompt =>
+        {
+            var user = TurnEvents.StoredUser(prompt.Id.Value!);
+            var idle = TurnEvents.StoredIdle("idle_original", SessionMessageIdleOutcome.Succeeded);
+            var ours = TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = scenario == "open" ? "" : "ours" }]);
+            StoredMessages(scenario == "queued" ? [] : [TurnEvents.StoredIdle("later_idle", SessionMessageIdleOutcome.Failed),
+                TurnEvents.StoredAssistant("later", [new SessionMessageAssistantText { Text = "foreign" }]), TurnEvents.StoredUser("later_user"), idle, ours, user]);
+            if (scenario == "open") { StoredMessages([ours, user]); }
+            return FiniteEvents(scenario switch
+            {
+                "queued" => [TurnEvents.Connected(), TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("fresh"), TurnEvents.Succeeded()],
+                "open" => [TurnEvents.Connected(), TurnEvents.Text("mid"), TurnEvents.TextEnded("whole"), TurnEvents.Succeeded()],
+                _ => [TurnEvents.Connected()],
+            });
+        });
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await CaptureRunFailureAsync(updates);
+
+        await Assert.That(error).IsNull();
+        string[] expected = [scenario switch { "queued" => "fresh", "open" => "whole", _ => "ours" }];
+        await Assert.That(TextChunks(updates)).IsEquivalentTo(expected, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await AssertRefreshCallsAsync(scenario == "open" ? 2 : 1);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task RunAsync_Should_Keep_Streaming_Parts_And_Recover_A_Partial_Turn_After_A_Reconnect(bool secondMarker)
+    {
+        var updates = new List<AgentResponseUpdate>();
+        _fake.OnPrompt(prompt =>
+        {
+            StoredMessages([TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = "" }]), TurnEvents.StoredUser(prompt.Id.Value!)]);
+            return [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("a"), TurnEvents.Connected(), TurnEvents.PermissionAsked("continue")];
+        });
+        var passes = 0;
+        _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            passes++;
+            if (secondMarker && passes == 1) { _fake.Emit(TurnEvents.Connected()); }
+            return new PermissionRequestListResponse { Status = 200, Requests = [], Location = new LocationPublicRef { Directory = "test-directory" } };
+        });
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = async (request, _) =>
+            {
+                if (request.Id == "continue")
+                {
+                    _fake.Emit(TurnEvents.Text("c"));
+                    _fake.Emit(TurnEvents.TextEnded("abc"));
+                    _fake.Emit(TurnEvents.TextStarted(ordinal: 1));
+                    _fake.Emit(TurnEvents.Text("d", ordinal: 1));
+                    _fake.Emit(TurnEvents.PermissionAsked("checkpoint"));
+                    return new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+                }
+                await Assert.That(TextChunks(updates)).IsEquivalentTo(["a", "bc", "d"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+                StoredMessages([TurnEvents.StoredIdle("end", SessionMessageIdleOutcome.Succeeded), TurnEvents.StoredAssistant("msg_assistant",
+                    [new SessionMessageAssistantText { Text = "abc" }, new SessionMessageAssistantText { Text = "d" }]), TurnEvents.StoredUser(PromptRequest().Id.Value!)]);
+                _fake.Emit(TurnEvents.Succeeded());
+                _fake.EndBus();
+                return new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+            },
+        });
+
+        var error = await CaptureRunFailureAsync(agent, updates);
+
+        await Assert.That(error).IsNull();
+        await Assert.That(TextChunks(updates)).IsEquivalentTo(["a", "bc", "d"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(passes).IsEqualTo(secondMarker ? 2 : 1);
+        await AssertRefreshCallsAsync(secondMarker ? 3 : 2, secondMarker ? 2 : 1);
+    }
+
+    [Test]
+    [Arguments("failed", false)]
+    [Arguments("interrupted", false)]
+    [Arguments("failed", true)]
+    [Arguments("interrupted", true)]
+    public async Task RunAsync_Should_Surface_The_Recovered_Original_Failure(string outcome, bool liveTerminal)
+    {
+        var trace = ArrangeCancellationTrace();
+        _fake.OnPrompt(prompt =>
+        {
+            var final = new SessionMessageListResponse
+            {
+                Status = 200,
+                Cursor = new ListCursor(),
+                Messages = [TurnEvents.StoredIdle("later", SessionMessageIdleOutcome.Succeeded), TurnEvents.StoredIdle("ours", new SessionMessageIdleOutcome(outcome),
+                    outcome == "failed" ? new SessionStructuredError { Type = "model_error", Message = "original error" } : null),
+                    TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = "ab" }]), TurnEvents.StoredUser(prompt.Id.Value!)],
+            };
+            StoredMessages(final.Messages);
+            if (liveTerminal)
+            {
+                _fake.Session.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                    .Returns(new SessionMessageListResponse { Status = 200, Cursor = new ListCursor(), Messages = [TurnEvents.StoredUser(prompt.Id.Value!)] }, final);
+            }
+            IEvent[] events = [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("a"), TurnEvents.ToolStarted("c1", "shell"),
+                TurnEvents.ToolCalled("c1", new Dictionary<string, JsonElement>(StringComparer.Ordinal)), TurnEvents.Connected()];
+            return FiniteEvents(liveTerminal ? [.. events, TurnEvents.Succeeded()] : events);
+        });
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await CaptureRunFailureAsync(updates);
+
+        await Assert.That(error?.Message).IsEqualTo(outcome == "failed" ? "Session error: original error" : null);
+        await Assert.That(TextChunks(updates)).IsEquivalentTo(["a", "b"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(updates.SelectMany(update => update.Contents).OfType<FunctionResultContent>().Select(content => content.Result))
+            .IsEquivalentTo(new object?[] { "Tool execution interrupted: shell" }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        string[] expected = outcome == "failed" ? [] : ["jobs"];
+        await Assert.That(trace).IsEquivalentTo(expected, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task RunAsync_Should_Fail_When_An_Observed_Delivery_Is_Missing_From_The_Projection(bool finalRead, bool found)
+    {
+        var reads = 0;
+        _fake.Session.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            reads++;
+            var present = (finalRead && reads == 1) || found;
+            return new SessionMessageListResponse { Status = 200, Cursor = new ListCursor(), Messages = present ? [TurnEvents.StoredUser(PromptRequest().Id.Value!)] : [] };
+        });
+        _fake.OnPrompt(prompt =>
+        {
+            IEvent[] prefix = [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.ToolStarted("c1", "shell"),
+                TurnEvents.ToolCalled("c1", new Dictionary<string, JsonElement>(StringComparer.Ordinal)), TurnEvents.Connected()];
+            return FiniteEvents(finalRead ? [.. prefix, TurnEvents.Succeeded()] : prefix);
+        });
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await CaptureRunFailureAsync(updates);
+
+        await Assert.That(error?.Message).IsEqualTo(found ? null : "Session error: the admitted prompt is missing from stored messages.");
+        await Assert.That(updates.SelectMany(update => update.Contents).OfType<FunctionResultContent>().Select(content => content.Result))
+            .IsEquivalentTo(new object?[] { "Tool execution interrupted: shell" }, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(reads).IsEqualTo(finalRead ? 2 : 1);
+        await Assert.That(TextChunks(updates)).IsEmpty();
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Accept_The_Extra_Background_Cycle_For_A_Buffered_Original_Terminal()
+    {
+        var trace = new List<string>();
+        _fake.OnPrompt(prompt =>
+        {
+            StoredMessages([TurnEvents.StoredIdle("end", SessionMessageIdleOutcome.Succeeded), TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = "ours" }]), TurnEvents.StoredUser(prompt.Id.Value!)]);
+            return FiniteEvents([TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Connected(), TurnEvents.Succeeded()]);
+        });
+        _fake.Jobs([]);
+#pragma warning disable OPENCODE001 // ExperimentalClient.WaitForSessionAsync, ExperimentalSessionWaitResponse and ListJobsAsync arrange the quietness-cycle trace.
+        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { trace.Add("wait"); return new ExperimentalSessionWaitResponse { Status = 204 }; });
+        _fake.Experimental.When(client => client.ListJobsAsync(Arg.Any<ExperimentalJobListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()))
+            .Do(_ => trace.Add("jobs"));
+#pragma warning restore OPENCODE001 // ExperimentalClient.WaitForSessionAsync, ExperimentalSessionWaitResponse and ListJobsAsync arrangement ends here.
+        _fake.Session.ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { trace.Add("inbox"); return new SessionInboxListResponse { Status = 200, Inbox = [] }; });
+        _fake.Sessions.GetActiveAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { trace.Add("active"); return new SessionActiveResponse { Status = 200, Active = new Dictionary<string, SessionActive>(StringComparer.Ordinal) }; });
+        var updates = new List<AgentResponseUpdate>();
+
+        var error = await CaptureRunFailureAsync(updates);
+
+        await Assert.That(error).IsNull();
+        await Assert.That(trace).IsEquivalentTo(["wait", "jobs", "inbox", "active", "wait", "jobs", "inbox", "active"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(TextChunks(updates)).IsEquivalentTo(["ours"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await AssertRefreshCallsAsync(messageQueries: 1);
+    }
+
+    [Test]
+    [Arguments("prompt")]
+    [Arguments("admission-list")]
+    [Arguments("snapshot-callback")]
+    [Arguments("original-callback")]
+    [Arguments("consumer")]
+    public async Task RunAsync_Should_Refresh_A_Reconnect_Buffered_In_Each_Sequential_Phase(string phase)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releases = new List<TaskCompletionSource<bool>>();
+        var trace = new List<string>();
+        var callbacks = new List<string>();
+        var active = 0;
+        var peak = 0;
+        _fake.OnPrompt(prompt =>
+        {
+            return phase switch
+            {
+                "consumer" => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Text("a")],
+                "original-callback" => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.PermissionAsked("phase")],
+                _ => [],
+            };
+        });
+        HoldAdmissionPhase(phase, trace, entered, releases);
+        if (phase == "snapshot-callback") { _fake.PendingPermissions(FakeOpenCode.SessionId, [TurnEvents.PendingPermission("phase")]); }
+        TraceRefresh(trace, [TurnEvents.PendingPermission("owned")], phase == "consumer" ? "abc" : "recovered");
+        var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = async (request, _) =>
+            {
+                callbacks.Add(request.Id);
+                peak = Math.Max(peak, ++active);
+                try
+                {
+                    if (request.Id == "phase") { await HoldPhaseEntryAsync(trace, entered, releases); }
+                    return reply;
+                }
+                finally { active--; }
+            },
+        });
+        var updates = new List<AgentResponseUpdate>();
+        var outcome = CaptureFailureAsync(async () =>
+        {
+            await foreach (var update in agent.RunStreamingAsync("hello", cancellationToken: cancellation.Token))
+            {
+                updates.Add(update);
+                if (phase == "consumer" && TextChunks([update]).Contains("a", StringComparer.Ordinal)) { await HoldPhaseEntryAsync(trace, entered, releases); }
+                if (TextChunks([update]).Any(text => text is "recovered" or "bc")) { trace.Add("recovered-output"); }
+            }
+        });
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, outcome)).IsSameReferenceAs(entered.Task);
+            _fake.Emit(TurnEvents.Connected());
+            _fake.EndBus();
+            foreach (var release in releases) { release.TrySetResult(true); }
+            await outcome;
+        }
+        finally { foreach (var release in releases) { release.TrySetResult(true); } _fake.EndBus(); await outcome; }
+
+        await AssertRefreshCallsAsync(messageQueries: 1);
+        await Assert.That(await outcome).IsNull();
+        await Assert.That(trace).IsEquivalentTo(["phase-enter", "phase-exit", "get-root-location", "location-list", "owned-reply", "messages", "recovered-output"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        string[] ids = phase is "snapshot-callback" or "original-callback" ? ["phase", "owned"] : ["owned"];
+        await Assert.That(callbacks).IsEquivalentTo(ids, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(peak).IsEqualTo(1);
+        await _fake.Session.Received(1).ListRequestsAsync(null, cancellation.Token);
+        foreach (var id in ids) { await _fake.Session.Received(1).ReplyToPermissionAsync(id, reply, OpenCodeRequestOptions.NoThrow, cancellation.Token); }
+    }
+
+    [Test]
+    [Arguments("root", false)]
+    [Arguments("list", true)]
+    [Arguments("messages", true)]
+    [Arguments("messages", false)]
+    [Arguments("callback", true)]
+    [Arguments("held-update", true)]
+    public async Task RunAsync_Should_Preserve_Cancellation_During_Refresh(string phase, bool delivered)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var trace = ArrangeCancellationTrace();
+        if (phase == "held-update")
+        {
+            await AssertRecoveredUpdateDisposalAsync(cancellation, trace);
+            return;
+        }
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var joined = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _fake.OnPrompt(prompt =>
+        {
+            return FiniteEvents(delivered ? [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.Connected()] : [TurnEvents.Connected()]);
+        });
+        if (phase == "root")
+        {
+            _fake.Session.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Is<CancellationToken>(token => token.CanBeCanceled))
+                .Returns(call => HoldRefreshAsync<SessionResponse>(entered, joined, call.Arg<CancellationToken>()));
+        }
+        if (phase == "list")
+        {
+            _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(call => HoldRefreshAsync<PermissionRequestListResponse>(entered, joined, call.Arg<CancellationToken>()));
+        }
+        if (phase == "messages")
+        {
+            _fake.Session.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(call => HoldRefreshAsync<SessionMessageListResponse>(entered, joined, call.Arg<CancellationToken>()));
+        }
+        if (phase == "callback")
+        {
+            _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(new PermissionRequestListResponse { Status = 200, Requests = [TurnEvents.PendingPermission("cancel")], Location = new LocationPublicRef { Directory = "test-directory" } });
+        }
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = async (_, token) => await HoldRefreshAsync<SessionPermissionReplyRequest>(entered, joined, token),
+        });
+        var result = CaptureRunFailureAsync(agent, [], cancellation.Token);
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, result)).IsSameReferenceAs(entered.Task);
+            await cancellation.CancelOnWorkerAsync();
+            var error = await Assert.That(await result).IsTypeOf<OperationCanceledException>();
+            await Assert.That(error?.CancellationToken).IsEqualTo(cancellation.Token);
+        }
+        finally { await cancellation.CancelOnWorkerAsync(); await result; }
+
+        await Assert.That(joined.Task.Status).IsEqualTo(TaskStatus.RanToCompletion);
+        var expected = new List<string>();
+        if (phase == "callback") { expected.Add("reject"); }
+        expected.Add("cancel-inbox:" + PromptRequest().Id.Value);
+        if (delivered) { expected.AddRange(["jobs", "interrupt"]); }
+        await Assert.That(trace).IsEquivalentTo(expected, TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    [Test]
+    public async Task RunAsync_Should_Not_Refresh_Or_Reply_From_The_Cancellation_Sweep()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var trace = ArrangeCancellationTrace();
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releases = new List<TaskCompletionSource<bool>>();
+        _fake.Session.CancelInboxAsync(Arg.Any<string>(), null, CancellationToken.None).Returns(async call =>
+        {
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            releases.Add(release);
+            trace.Add("cancel-inbox:" + call.Arg<string>());
+            entered.TrySetResult(true);
+            await release.Task;
+            return new SessionInboxCancelResponse { Status = 204 };
+        });
+        _fake.OnPrompt(prompt => [TurnEvents.Delivered(prompt.Id.Value!), TurnEvents.PermissionAsked("cancel")]);
+        await using var agent = new OpenCodeAgent(_fake.Client, new OpenCodeAgentOptions
+        {
+            OnPermissionRequest = async (_, _) => { await cancellation.CancelOnWorkerAsync(); throw new OperationCanceledException(cancellation.Token); },
+        });
+        var result = CaptureFailureAsync(async () => await agent.RunAsync("hello", cancellationToken: cancellation.Token));
+        try
+        {
+            await Assert.That(await Task.WhenAny(entered.Task, result)).IsSameReferenceAs(entered.Task);
+            _fake.Emit(TurnEvents.Connected());
+            _fake.PendingPermissions(FakeOpenCode.SessionId, [TurnEvents.PendingPermission("late")]);
+            foreach (var release in releases) { release.TrySetResult(true); }
+            var error = await Assert.That(await result).IsTypeOf<OperationCanceledException>();
+            await Assert.That(error?.CancellationToken).IsEqualTo(cancellation.Token);
+        }
+        finally { foreach (var release in releases) { release.TrySetResult(true); } await result; }
+
+        await Assert.That(trace).IsEquivalentTo(["reject", "cancel-inbox:" + PromptRequest().Id.Value, "jobs", "interrupt"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(_fake.Permissions.ReceivedCalls()).IsEmpty();
+        await _fake.Session.DidNotReceive().ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+        await _fake.Session.Received(1).ListRequestsAsync(null, cancellation.Token);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    private static async Task<T> HoldRefreshAsync<T>(TaskCompletionSource<bool> entered, TaskCompletionSource<bool> joined, CancellationToken token)
+    {
+        try { return await HoldUntilCancelledAsync<T>(entered, token); }
+        finally { joined.TrySetResult(true); }
+    }
+
+    private async Task AssertRecoveredUpdateDisposalAsync(CancellationTokenSource cancellation, List<string> trace)
+    {
+        _fake.OnPrompt(prompt =>
+        {
+            StoredMessages([TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = "recovered" }]), TurnEvents.StoredUser(prompt.Id.Value!)]);
+            return FiniteEvents([TurnEvents.Connected()]);
+        });
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        var updates = new List<AgentResponseUpdate>();
+        var error = await CaptureFailureAsync(async () =>
+        {
+            await foreach (var update in agent.RunStreamingAsync("hello", cancellationToken: cancellation.Token))
+            {
+                updates.Add(update);
+                if (update.Contents.OfType<TextContent>().Any())
+                {
+                    await cancellation.CancelOnWorkerAsync();
+                    break;
+                }
+            }
+        });
+        await Assert.That(TextChunks(updates)).IsEquivalentTo(["recovered"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(error).IsNull();
+        await Assert.That(trace).IsEquivalentTo(["cancel-inbox:" + PromptRequest().Id.Value, "jobs", "interrupt"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(SubscriptionToken().IsCancellationRequested).IsTrue();
+    }
+
+    private static async Task HoldPhaseEntryAsync(List<string> trace, TaskCompletionSource<bool> entered, List<TaskCompletionSource<bool>> releases)
+    {
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        releases.Add(release);
+        trace.Add("phase-enter");
+        entered.TrySetResult(true);
+        await release.Task;
+        trace.Add("phase-exit");
+    }
+
+    private void HoldAdmissionPhase(string phase, List<string> trace, TaskCompletionSource<bool> entered, List<TaskCompletionSource<bool>> releases)
+    {
+        if (phase == "prompt")
+        {
+            _fake.Session.PromptAsync(Arg.Any<SessionPromptRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(async call =>
+            {
+                var prompt = call.Arg<SessionPromptRequest>();
+                await HoldPhaseEntryAsync(trace, entered, releases);
+                return new SessionPromptResponse
+                {
+                    Status = 200,
+                    Prompt = new SessionInboxUser
+                    {
+                        Id = prompt.Id.Value!,
+                        SessionId = FakeOpenCode.SessionId,
+                        Delivery = SessionInboxDelivery.Queue,
+                        Time = new SessionInboxUserTime { Created = 1 },
+                        Payload = new SessionInboxUserPayload { Text = prompt.Text },
+                    },
+                };
+            });
+        }
+        if (phase == "admission-list")
+        {
+            _fake.Session.ListRequestsAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(async _ =>
+            {
+                await HoldPhaseEntryAsync(trace, entered, releases);
+                return new SessionPermissionListResponse { Status = 200, Requests = [] };
+            });
+        }
+    }
+
+    private void TraceRefresh(List<string> trace, IReadOnlyList<PermissionRequest> pending, string text)
+    {
+        _fake.TraceRootLocation(trace);
+        _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            trace.Add("location-list");
+            return new PermissionRequestListResponse { Status = 200, Requests = pending, Location = new LocationPublicRef { Directory = "test-directory" } };
+        });
+        _fake.TracePermissionReply("owned", trace);
+        _fake.TraceStoredMessages(trace, () =>
+        {
+            return new SessionMessageListResponse
+            {
+                Status = 200,
+                Cursor = new ListCursor(),
+                Messages = [TurnEvents.StoredIdle("end", SessionMessageIdleOutcome.Succeeded),
+                TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = text }]), TurnEvents.StoredUser(PromptRequest().Id.Value!)]
+            };
+        });
+    }
+
+    private void StoredMessages(IReadOnlyList<ISessionMessageInfo> messages) =>
+        _fake.Session.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new SessionMessageListResponse { Status = 200, Messages = messages, Cursor = new ListCursor() });
+
+    private IEnumerable<IEvent> FiniteEvents(IEnumerable<IEvent> events)
+    {
+        foreach (var current in events) { yield return current; }
+        _fake.EndBus();
+    }
+
+    private static IEnumerable<string> TextChunks(IEnumerable<AgentResponseUpdate> updates) => updates.SelectMany(update => update.Contents).OfType<TextContent>().Select(content => content.Text);
+
+    private async Task<Exception?> CaptureRunFailureAsync(List<AgentResponseUpdate> updates)
+    {
+        await using var agent = new OpenCodeAgent(_fake.Client);
+        return await CaptureRunFailureAsync(agent, updates);
+    }
+
+    private async Task AssertRefreshCallsAsync(int messageQueries, int markers = 1)
+    {
+        await _fake.Session.Received(markers).GetAsync(null, Arg.Any<CancellationToken>());
+        await _fake.Permissions.Received(markers).ListRequestsAsync(Arg.Is<PermissionRequestListRequest>(request => request.Location != null && request.Location.Directory == "test-directory"), null, Arg.Any<CancellationToken>());
+        await _fake.Session.Received(messageQueries).ListMessagesAsync(Arg.Is<SessionMessageListRequest>(request => request.Limit == 200 && request.Order == ListOrder.Descending && request.Cursor == null && request.Type == null), null, Arg.Any<CancellationToken>());
     }
 
     private async Task AssertOriginalOutputAndClosedBusAsync(List<AgentResponseUpdate> updates)

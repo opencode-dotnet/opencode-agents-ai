@@ -32,18 +32,85 @@ internal static class TurnEvents
         Data = new SessionInboxDeliveredData { SessionId = sessionId, InboxId = inboxId },
     };
 
-    public static IEvent Text(string delta, string sessionId = FakeOpenCode.SessionId) => new SessionTextDelta
+    public static IEvent Text(string delta, string sessionId = FakeOpenCode.SessionId, string assistantMessageId = "msg_assistant", long ordinal = 0) => new SessionTextDelta
     {
         Id = "event_text",
         Created = 1,
-        Data = new SessionTextDeltaData { SessionId = sessionId, AssistantMessageId = "msg_assistant", Ordinal = 0, Delta = delta },
+        Data = new SessionTextDeltaData { SessionId = sessionId, AssistantMessageId = assistantMessageId, Ordinal = ordinal, Delta = delta },
     };
 
-    public static IEvent Reasoning(string delta) => new SessionReasoningDelta
+    public static IEvent Reasoning(string delta, string assistantMessageId = "msg_reasoning", long ordinal = 0) => new SessionReasoningDelta
     {
         Id = "event_reasoning",
         Created = 1,
-        Data = new SessionReasoningDeltaData { SessionId = FakeOpenCode.SessionId, AssistantMessageId = "msg_reasoning", Ordinal = 0, Delta = delta },
+        Data = new SessionReasoningDeltaData { SessionId = FakeOpenCode.SessionId, AssistantMessageId = assistantMessageId, Ordinal = ordinal, Delta = delta },
+    };
+
+    public static SessionTextStarted TextStarted(string assistantMessageId = "msg_assistant", long ordinal = 0) => new()
+    {
+        Id = "event_text_started",
+        Created = 1,
+        Durable = new SessionTextStartedDurable { AggregateId = FakeOpenCode.SessionId, Seq = 1, Version = 1 },
+        Data = new SessionTextStartedData { SessionId = FakeOpenCode.SessionId, AssistantMessageId = assistantMessageId, Ordinal = ordinal },
+    };
+
+    public static SessionTextEnded TextEnded(string text, string assistantMessageId = "msg_assistant", long ordinal = 0) => new()
+    {
+        Id = "event_text_ended",
+        Created = 1,
+        Durable = new SessionTextEndedDurable { AggregateId = FakeOpenCode.SessionId, Seq = 2, Version = 1 },
+        Data = new SessionTextEndedData { SessionId = FakeOpenCode.SessionId, AssistantMessageId = assistantMessageId, Ordinal = ordinal, Text = text },
+    };
+
+    public static SessionReasoningStarted ReasoningStarted(string assistantMessageId = "msg_reasoning", long ordinal = 0) => new()
+    {
+        Id = "event_reasoning_started",
+        Created = 1,
+        Durable = new SessionReasoningStartedDurable { AggregateId = FakeOpenCode.SessionId, Seq = 1, Version = 1 },
+        Data = new SessionReasoningStartedData { SessionId = FakeOpenCode.SessionId, AssistantMessageId = assistantMessageId, Ordinal = ordinal },
+    };
+
+    public static SessionReasoningEnded ReasoningEnded(string text, string assistantMessageId = "msg_reasoning", long ordinal = 0) => new()
+    {
+        Id = "event_reasoning_ended",
+        Created = 1,
+        Durable = new SessionReasoningEndedDurable { AggregateId = FakeOpenCode.SessionId, Seq = 2, Version = 1 },
+        Data = new SessionReasoningEndedData { SessionId = FakeOpenCode.SessionId, AssistantMessageId = assistantMessageId, Ordinal = ordinal, Text = text },
+    };
+
+    public static SessionMessageUser StoredUser(string id, string text = "hello") => new()
+    {
+        Id = id,
+        Text = text,
+        Time = new SessionMessageUserTime { Created = 1 },
+    };
+
+    public static SessionMessageAssistant StoredAssistant(string id, IReadOnlyList<ISessionMessageAssistantContent> content,
+        TokenUsageInfo? tokens = null, SessionMessageAssistantFinish? finish = null) => new()
+        {
+            Id = id,
+            Content = content,
+            Tokens = tokens,
+            Finish = finish,
+            Agent = "build",
+            Model = new ModelRef { Id = "model_test", ProviderId = "provider_test" },
+            Time = new SessionMessageAssistantTime { Created = 1 },
+        };
+
+    public static SessionMessageIdle StoredIdle(string id, SessionMessageIdleOutcome outcome, SessionStructuredError? error = null) => new()
+    {
+        Id = id,
+        Outcome = outcome,
+        Error = error,
+        Time = new SessionMessageIdleTime { Created = 1 },
+    };
+
+    public static SessionMessageAssistantTool StoredTool(string id, string name, ISessionMessageToolState state) => new()
+    {
+        Id = id,
+        Name = name,
+        State = state,
+        Time = new SessionMessageAssistantToolTime { Created = 1 },
     };
 
     public static IEvent ToolStarted(string callId, string name) => new SessionToolInputStarted

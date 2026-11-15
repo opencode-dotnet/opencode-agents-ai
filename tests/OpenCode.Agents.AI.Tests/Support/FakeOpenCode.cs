@@ -19,6 +19,10 @@ internal sealed class FakeOpenCode
         var events = Substitute.For<EventsClient>();
         Client.Sessions.Returns(Sessions);
         Client.Events.Returns(events);
+        Permissions = Substitute.For<PermissionsClient>();
+        Client.Permissions.Returns(Permissions);
+        Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new PermissionRequestListResponse { Status = 200, Requests = [], Location = new LocationPublicRef { Directory = "test-directory" } });
         Shells = Substitute.For<ShellsClient>();
         Client.Shells.Returns(Shells);
         AddShell("shell_test");
@@ -51,6 +55,8 @@ internal sealed class FakeOpenCode
 
     public ShellsClient Shells { get; }
 
+    public PermissionsClient Permissions { get; }
+
     public ShellClient AddShell(string shellId)
     {
         var client = Substitute.For<ShellClient>();
@@ -76,6 +82,8 @@ internal sealed class FakeOpenCode
             .Returns(new SessionPermissionListResponse { Status = 200, Requests = [] });
         client.ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionInboxListResponse { Status = 200, Inbox = [] });
+        client.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(new SessionMessageListResponse { Status = 200, Messages = [], Cursor = new ListCursor() });
         client.CancelInboxAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionInboxCancelResponse { Status = 204 });
         client.InterruptAsync(Arg.Any<SessionInterruptRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
@@ -130,6 +138,24 @@ internal sealed class FakeOpenCode
     public void Active(IReadOnlyDictionary<string, SessionActive> active) =>
         Sessions.GetActiveAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(new SessionActiveResponse { Status = 200, Active = active });
+
+    public void TraceRootLocation(ICollection<string> trace) =>
+        Session.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            trace.Add("get-root-location");
+            return new SessionResponse { Status = 200, Session = SessionInfo(SessionId, parentId: null) };
+        });
+
+    public void TracePermissionReply(string requestId, ICollection<string> trace) =>
+        Session.ReplyToPermissionAsync(requestId, Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { trace.Add("owned-reply"); return new SessionPermissionReplyResponse { Status = 204 }; });
+
+    public void TraceStoredMessages(ICollection<string> trace, Func<SessionMessageListResponse> snapshot) =>
+        Session.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            trace.Add("messages");
+            return snapshot();
+        });
 
     private static string PromptId(SessionPromptRequest request) =>
         request.Id.Value ?? throw new InvalidOperationException("The prompt must provide its id.");

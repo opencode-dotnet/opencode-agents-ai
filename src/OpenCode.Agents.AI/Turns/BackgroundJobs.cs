@@ -123,7 +123,12 @@ internal sealed class BackgroundJobs(OpenCodeClient client, string sessionId, do
     {
         while (events.TryRead(out var current))
         {
-            if (current is PermissionAsked asked)
+            if (current.Type == "server.connected")
+            {
+                await permissions.ReconcileLocationAsync(client.Permissions, cancellationToken).ConfigureAwait(false);
+                _terminalGeneration++;
+            }
+            else if (current is PermissionAsked asked)
             {
                 await permissions.RespondAsync(asked, cancellationToken).ConfigureAwait(false);
             }

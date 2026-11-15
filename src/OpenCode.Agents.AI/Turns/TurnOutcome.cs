@@ -10,6 +10,11 @@ internal static class TurnOutcome
     public static bool EndsTurn(IEvent @event) =>
         @event.Type is "session.execution.succeeded" or "session.execution.failed" or "session.execution.interrupted";
 
+    public static Exception? Failure(ISessionMessageInfo end) =>
+        end is SessionMessageIdle idle && idle.Outcome == SessionMessageIdleOutcome.Failed
+            ? new InvalidOperationException("Session error: " + (idle.Error?.Message ?? "the turn failed while the event stream was reconnecting"))
+            : null;
+
     public static Exception? Failure(IEvent turnEnd) => turnEnd switch
     {
         SessionExecutionFailed failed => new InvalidOperationException($"Session error: {failed.Data.Error.Message}"),

@@ -1,6 +1,6 @@
 # Testing Style — authoring tests
 
-Date: 2026-11-15
+Date: 2026-11-16
 
 Binding authorship style for every test in this repository. `quality-gates.md` owns the
 current assurance posture and completion gates; operational build-out state belongs in
@@ -246,6 +246,10 @@ This product's critical rules:
 - With no callback a permission request is rejected.
 - The callback's reply reaches OpenCode unchanged.
 - A cancelled run interrupts the turn on the server.
+- A reconnect recovers pending owned permission requests through one root-location list.
+- An unseen original end is recovered from stored messages, bounded by the first idle after the exact user.
+- Recovery does not duplicate semantic text, reasoning, calls, results or usage across snapshot/live overlap.
+- A reconnect can wake background settling without projecting wake output or reusing a consumed generation.
 
 Mutation-tool scores are advisory. A tool that compiles mutants without the analyzer wall reports
 kills that the real build would reject, so its results are replayed through the full build before

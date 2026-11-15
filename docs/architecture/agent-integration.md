@@ -1,6 +1,6 @@
 # Agent Integration Architecture
 
-Date: 2026-11-15
+Date: 2026-11-16
 
 Canonical current rules for the agent contract, session ownership, the harness and orchestration
 boundary, dependencies, and upstream parity. Projects and packaging live in
@@ -30,7 +30,8 @@ owns; the layer above MAF belongs to a separate, later repository.
 ## A run
 
 One run sends one prompt. Its original turn ends on exactly one of
-`session.execution.succeeded`, `session.execution.failed` or `session.execution.interrupted`.
+`session.execution.succeeded`, `session.execution.failed` or `session.execution.interrupted`, or
+is recovered after a reconnect from the first stored idle after its exact typed user message.
 Normal run completion follows a later background-work quietness check. A failed original turn and
 a `Shutdown` interruption throw without draining background work; any other interruption enters
 the normal quietness check.
@@ -40,7 +41,8 @@ steering it into another prompt's work as the CLI does. This preserves prompt is
 this difference only with an approved change to that isolation contract, or if upstream changes
 make Queue cease to provide the boundary.
 
-Cancellation therefore gates root interruption on this run observing its exact delivery. The CLI
+Cancellation therefore gates root interruption on this run observing its exact delivery, through
+the matched live inbox event or the exact projected user message. The CLI
 interrupts without that gate (`packages/cli/src/run/noninteractive.ts:222,262–266` at v2.3.0): it
 steers, while before our queued prompt's delivery the active turn is certainly someone else's.
 Reverse this gate if delivery switches to steer. Queue isolates delivery order, not an interrupt's
@@ -121,9 +123,17 @@ requests of its own OpenCode session and of that session's children, because one
 carries the requests of every client.
 
 After prompt admission, before reading or mapping queued turn events, the run lists and answers
-its root session's pending requests in returned order. It does not enumerate descendants' pending
-requests, so it cannot recover a child ask emitted before subscription. Live owned asks remain
-answerable through background settling.
+its root session's pending requests in returned order. This admission pass does not enumerate
+descendants' pending requests, so it cannot recover a child ask emitted before subscription unless
+a later reconnect snapshot includes it. Live owned asks remain answerable through background settling.
+
+Every consumed replacement `server.connected` frame takes one root-location pending-permission
+snapshot: one root lookup supplies its current directory, then one explicit-location list is
+answered in returned order through the same ownership and request-id ledger. No session enumeration
+or additional location query is made. Root lookup, location-list, callback and reply failures remain
+observable. A prior cached-negative ownership result stays negative. A request can be missed if
+the root, or a child, moved to another location after the child was created
+(`packages/core/src/session/move.ts` moves only that one session).
 
 The shared run-scoped responder attempts each request id once, across snapshot and live events,
 and reconciles serially. Unlike the CLI's concurrent reconciliation and lack of id deduplication,
@@ -139,6 +149,70 @@ requests on Reject and reevaluates pending requests after Always saves a rule. T
 can race our list and reply; they do not imply that this adapter evaluates or persists rules.
 
 A failed reply to OpenCode leaves the run as an exception; a reply that the permission request was not found is ignored, because the request is no longer pending; other not-found replies, such as a missing session, still leave the run as an exception. OpenCode's non-interactive client ignores every reply failure; the agent surfaces them because a request whose answer was lost otherwise blocks its session without a trace. The step is reverted if OpenCode starts retrying or reconciling lost replies itself.
+
+## Reconnect recovery
+
+The SDK 1.1.0 live bus reconnects without replay or a shared projection cursor
+(`docs/guide/streaming.md:335–366`). A later marker is consumed sequentially after any current
+query, callback or yielded update resumes; it neither resends the prompt nor starts another
+consumer. Its permission pass precedes the original-turn message query.
+
+Message recovery walks descending 200-message pages to the exact typed user id, following opaque
+cursors without repeating Order, then reverses the collected suffix without timestamp sorting.
+The first stored idle bounds original output and outcome; later wakes and turns are excluded.
+An absent user before observed delivery leaves the prompt queued and ordinary mapping unchanged.
+An absent user after observed delivery fails explicitly, including on the final projection read.
+Neither root activity, SessionInfo.Outcome nor assistant Finish establishes that prompt's outcome.
+
+After delivery evidence, each reconnect invalidates open parts' live-start authorization, not
+their emitted prefixes. Ended snapshot text/reasoning recovers its missing suffix immediately.
+Gap-spanning or first-seen mid-part deltas remain raw until a full ended value arrives; a newly
+observed live start streams normally. Buffered starts/deltas cannot reopen snapshot-ended keys.
+The key is kind, assistant id and separate text/reasoning ordinal. Equal or non-prefix full values
+are silently skipped without replacing previously emitted text, as in the CLI.
+
+Completed/error stored tools recover missing calls and results independently. A Running tool
+emits its call from structured Input immediately and remains open for its live result. Streaming
+input strings are never parsed into arguments. Filtered duplicate calls/results never reopen a
+call; only actual completion or failure closes remaining calls with interrupted results. Finished
+assistant usage is recovered once with the existing rounding and token-field mapping. Unknown
+message, content and tool-state carriers remain raw; stored parts and assistants retain their actual
+RawRepresentation. Unknown stored outcomes retain the non-failure default.
+
+A recovered first idle ends original reading after its content and raw end update. A stored failed
+idle throws its error, or `Session error: the turn failed while the event stream was reconnecting`
+when no error is present, without background draining. Interrupted stored outcomes enter settling.
+When only a live original terminal arrives after recovery activation, a final projection read
+(without another permission pass) prefers the first stored idle; a found user without idle retains
+the live outcome. Observed Shutdown fails immediately. Unseen Shutdown cannot be reconstructed:
+the pinned server stores no idle for it, so the resumed turn is followed instead
+(`packages/schema/src/session-message.ts:294–303`, `packages/core/src/session/execution.ts:155–159`).
+
+Background reconnects reconcile permissions and increment the existing generation once. They never
+project messages or wake output, clear declines merely on connection, poll, or start a concurrent
+idle wait. A buffered original live terminal following recovered idle can authorize one extra
+quietness cycle. Cancellation unwinds sequential refresh calls with their phase token; the finite
+sweep adds no event consumer, permission reply or message query and abandons buffered markers.
+
+### Reconnect divergence records
+
+Each decision below is under the maintainer's 2026-11-15 delegation, “decide from the two north stars”.
+
+| Record | Difference and reason | Reversal trigger |
+|---|---|---|
+| **R8-0: replacement connections** | Under that delegation, survive/recover the SDK's replacement connection although the pinned CLI's subscription ends on a drop. SDK 1.1.0 reconnects by design; ignoring the gap loses the run. The CLI can win an independent wait/projection race, but does not revive its subscription (`packages/cli/src/run/noninteractive.ts:144–151,242–253`; `packages/client/src/promise/shared-events.ts:46–65`). | The SDK stops reconnecting, or the CLI adopts reconnect. |
+| **R8-a: permission recovery** | Under that delegation, take one root-location pending list filtered through existing ownership, in returned order; CLI reconciles only root at admission. Otherwise an owned same-location child ask can be lost in the gap. Moved-session and cached-negative limits above remain. | Upstream supplies equivalent owned-request replay/reconciliation, or the ownership/snapshot contract is explicitly revised. |
+| **R8-b: per-part delta handoff** | Under that delegation, recover ended parts immediately while only gap-spanning/mid-part keys wait for full ends. New live starts stream normally; the CLI renders text/reasoning at ended boundaries. This preserves MAF cadence without insertion or duplicate content. | The SDK supplies an exact part/delta resume cursor, or an approved MAF replacement-update contract removes per-part suppression. |
+| **R8-d: background wake / extra cycle** | Under that delegation, reconnect authorizes a refreshed generation because a terminal may be lost, unlike the CLI's dropped subscription. Keep the existing terminal drain, including the extra cycle for a buffered original terminal after recovered idle, rather than adding terminal-id deduplication. | Upstream replay/independent background completion covers missed transitions, or an approved completion model removes the redundant cycle. |
+| **R8-e: MAF recovery / first-turn boundary** | Under that delegation, recover missing call/result pairs and usage with actual stored carriers, bounded by the original first idle. The CLI renders terminal tool summaries and can include wake output/outcomes. MAF content and D1 require original-only projection here. | An approved multi-turn MAF projection supersedes D1, or MAF changes the representation. |
+
+**R8-b known limits (CLI prefix parity, not another divergence):** we compare the provider's final
+text with the deltas we already streamed, not two full values, so when OpenCode uses the provider's
+end text (`packages/core/src/session/runner/publish-llm-event.ts:227`), the rest of a part that spanned
+the gap can be dropped. A retried step can reuse assistant id and restart ordinals, also silently
+omitting later non-prefix content. No attempt-reset or replacement-update protocol is introduced.
+The SDK's minute-long failed-reconnect bound is SDK behavior; the pinned CLI does not run an
+unlimited reconnect loop for an existing subscription.
 
 ## Cancellation
 
@@ -194,7 +268,7 @@ include another client's work. A root interrupt targets the session's active exe
 identity; after delivery it can hit another client's turn, including in the background phase or just
 after our original turn ends, as in the CLI. The delivery gate removes only the certainly-foreign
 pre-delivery case. Delivery unseen during reconciliation or a permission callback before the turn
-reader runs, or racing cancellation after its delivery flag was read, can leave our own started turn
+reader observes it live or in projection, or racing cancellation after its delivery flag was read, can leave our own started turn
 running because inbox cancellation is then a no-op. Local idle-wait cancellation itself proves
 neither server termination nor continuation.
 
@@ -247,6 +321,7 @@ The limits and approved differences above qualify this list; it is not full CLI 
 11. Permission listening stays alive during idle waits and terminal-wake cycles — `packages/cli/src/run/noninteractive.ts:142–178,242–253`.
 12. CLI captures execution-end before queries and wakes only for remembered sessions — `packages/cli/src/run/noninteractive.ts:80,164–170,242–253`; our separately recorded remembered-or-owned widening still consumes each generation once.
 13. Cancellation partially mirrors the CLI's inbox, selected-child interrupt and shell-removal actions — `packages/cli/src/run/noninteractive.ts:262–275`; the delivery gate, admission uncertainty and no-drain boundary above qualify it.
+14. Original projection uses descending pages, timeline/content order, the first idle and prefix-only suffix recovery — `packages/cli/src/run/noninteractive.ts:318–353,388–392,596–638`; the R8 records qualify delta streaming, tools and transport survival.
 
 ### Experimental SDK declarations used by the provider
 

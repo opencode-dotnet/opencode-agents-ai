@@ -28,6 +28,19 @@ internal sealed class PermissionResponder(SessionsClient sessions, string sessio
         }
     }
 
+    public async ValueTask ReconcileLocationAsync(PermissionsClient pending, CancellationToken cancellationToken)
+    {
+        var root = await sessions.GetSessionClient(sessionId).GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var response = await pending.ListRequestsAsync(new PermissionRequestListRequest
+        {
+            Location = new LocationSelector { Directory = root.Session.Location.Directory },
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+        foreach (var request in response.Requests)
+        {
+            await RespondAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     public async ValueTask<bool> OwnsAsync(string requestSessionId, CancellationToken cancellationToken)
     {
         if (_owned.TryGetValue(requestSessionId, out var owned))

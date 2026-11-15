@@ -108,6 +108,23 @@ public sealed class TurnOutcomeTests
         await Assert.That(failure).IsNull();
     }
 
+    [Test]
+    [Arguments("succeeded", false, null)]
+    [Arguments("interrupted", false, null)]
+    [Arguments("future", false, null)]
+    [Arguments("failed", true, "Session error: model overloaded")]
+    [Arguments("failed", false, "Session error: the turn failed while the event stream was reconnecting")]
+    public async Task Failure_Should_Use_The_First_Stored_Idles_Outcome(string outcome, bool withError, string? expected)
+    {
+        var idle = TurnEvents.StoredIdle("idle1", new SessionMessageIdleOutcome(outcome),
+            withError ? new SessionStructuredError { Type = "model_error", Message = "model overloaded" } : null);
+
+        var failure = TurnOutcome.Failure(idle);
+
+        await Assert.That(failure?.Message).IsEqualTo(expected);
+        if (expected is not null) { await Assert.That(failure).IsTypeOf<InvalidOperationException>(); }
+    }
+
     private static UnknownEvent DriftedEnd(string type, JsonObject data) => new(type, JsonSerializer.SerializeToElement(new JsonObject
     {
         ["type"] = type,

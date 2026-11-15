@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -118,10 +117,13 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             Delivery = SessionInboxDelivery.Queue,
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
         var cancellation = new RunCancellation(_client, typedSession.SessionId!, promptId, admission.Prompt.Time.Created); // Successful admission has assigned the session id.
+        var mapper = new TurnEventMapper(Id, promptId);
+        var refresh = new TurnRefresh(_client, typedSession.SessionId!, promptId, permissions, mapper); // Admission has assigned the session id.
+        var reader = new TurnReader(mapper, permissions, refresh, cancellation, promptId, Id);
         try
         {
             await permissions.ReconcileAsync(cancellationToken).ConfigureAwait(false);
-            await foreach (var update in ReadTurnAsync(events, typedSession, promptId, permissions, cancellation, cancellationToken).ConfigureAwait(false))
+            await foreach (var update in reader.ReadAsync(events, typedSession.SessionId!, cancellationToken).ConfigureAwait(false)) // Admission has assigned the session id.
             {
                 yield return update;
             }
@@ -137,94 +139,6 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
             }
         }
     }
-
-    private async IAsyncEnumerable<AgentResponseUpdate> ReadTurnAsync(
-        IAsyncEnumerator<IEvent> events, OpenCodeAgentSession session, string promptId, PermissionResponder permissions, RunCancellation cancellation,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        var mapper = new TurnEventMapper(Id, promptId);
-        var delivered = false;
-        var ended = false;
-        ExceptionDispatchInfo? failure = null;
-        while (!ended)
-        {
-            AgentResponseUpdate? update;
-            try
-            {
-                if (!await events.MoveNextAsync().ConfigureAwait(false))
-                {
-                    break;
-                }
-
-                var current = events.Current;
-                if (current is PermissionAsked asked)
-                {
-                    await permissions.RespondAsync(asked, cancellationToken).ConfigureAwait(false);
-                }
-                else if (current is SessionExecutionStarted started)
-                {
-                    permissions.OnExecutionStarted(started.Data.SessionId);
-                }
-
-                var eventSessionId = GetEventSessionId(current);
-                if (eventSessionId is not null && eventSessionId != session.SessionId)
-                {
-                    continue;
-                }
-
-                if (current is SessionInboxDelivered delivery && delivery.Data.InboxId == promptId)
-                {
-                    delivered = true;
-                    cancellation.MarkDelivered();
-                }
-                if (!delivered)
-                {
-                    continue;
-                }
-
-                update = mapper.Map(current);
-                ended = eventSessionId == session.SessionId && TurnOutcome.EndsTurn(current);
-                if (ended && TurnOutcome.Failure(current) is { } turnFailure)
-                {
-                    failure = ExceptionDispatchInfo.Capture(turnFailure);
-                }
-            }
-            catch (Exception error) when (error is not OperationCanceledException cancelled || cancelled.CancellationToken != cancellationToken)
-            {
-                failure = ExceptionDispatchInfo.Capture(error);
-                break;
-            }
-
-            if (update is not null)
-            {
-                yield return update;
-            }
-        }
-
-        foreach (var closingResult in mapper.CloseOpenCalls())
-        {
-            yield return closingResult;
-        }
-
-        failure?.Throw();
-        if (!ended)
-        {
-            throw new InvalidOperationException("The event stream ended before the turn ended.");
-        }
-    }
-
-    private static string? GetEventSessionId(IEvent current) => current switch
-    {
-        ISessionScopedEvent scoped => scoped.SessionId,
-        FormCreated created => created.Data.Form.SessionId,
-        FormReplied replied => replied.Data.SessionId,
-        FormCancelled cancelled => cancelled.Data.SessionId,
-        UnknownEvent unknown when unknown.Payload.TryGetProperty("data", out var data)
-            && data.ValueKind == JsonValueKind.Object
-            && data.TryGetProperty("sessionID", out var id)
-            && id.ValueKind == JsonValueKind.String => id.GetString(),
-        _ => null,
-    };
 
     /// <inheritdoc/>
     protected override string? IdCore => _id;

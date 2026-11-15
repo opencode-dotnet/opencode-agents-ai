@@ -890,6 +890,8 @@ public sealed class BackgroundJobsTests
     {
         try
         {
+            var initial = await events.ReadAsync(cancellationToken);
+            await Assert.That(initial.Type).IsEqualTo("server.connected");
             await jobs.WaitAsync(events, cancellationToken);
             return null;
         }
@@ -897,6 +899,221 @@ public sealed class BackgroundJobsTests
         {
             return error;
         }
+    }
+
+    [Test]
+    [Arguments("idle")]
+    [Arguments("channel")]
+    [Arguments("jobs")]
+    [Arguments("inbox")]
+    [Arguments("active")]
+    [Arguments("callback")]
+    public async Task WaitAsync_Should_Reconcile_And_Recheck_After_A_Reconnect(string phase)
+    {
+        var events = Channel.CreateUnbounded<IEvent>();
+        events.Writer.TryWrite(TurnEvents.Connected());
+        var child = _fake.AddSession("child", FakeOpenCode.SessionId);
+        var settled = false;
+        var replyIds = new List<string>();
+        var reply = new SessionPermissionReplyRequest { Decision = PermissionReply.Once };
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, (request, _) =>
+        {
+            replyIds.Add(request.Id);
+            if (request.Id == "phase") { EmitReconnectCheckpoint(events.Writer); }
+            if (request.Id == "lost") { settled = true; }
+            return new(reply);
+        });
+        var jobs = new BackgroundJobs(_fake.Client, FakeOpenCode.SessionId, 100, responder);
+        if (phase == "inbox")
+        {
+#pragma warning disable OPENCODE001 // JobStatus and JobSubagent arrange the remembered inbox before the waiter starts.
+            _fake.Jobs([TurnEvents.SubagentJob("remember", FakeOpenCode.SessionId, "child", 100, JobStatus.Completed)]);
+#pragma warning restore OPENCODE001 // JobStatus and JobSubagent arrangement ends here.
+            await Assert.That(await jobs.HasPendingAsync(CancellationToken.None)).IsTrue();
+        }
+        TraceQueries();
+        TraceInboxes("child");
+        ArrangeLocationSnapshot([TurnEvents.PendingPermission("lost", "child")]);
+        var checks = 0;
+#pragma warning disable OPENCODE001 // ExperimentalClient.ListJobsAsync, ExperimentalJobListResponse and JobStatus arrange the event-authorized cycles.
+        ListJobs(_ =>
+        {
+            checks++;
+            if (checks == 1 && phase == "jobs") { EmitReconnectCheckpoint(events.Writer); }
+            if (checks == 1 && phase == "channel") { events.Writer.TryWrite(TurnEvents.PermissionAsked("phase")); }
+            return !settled && phase is not "inbox" and not "active"
+                ? [TurnEvents.ShellJob("pending", FakeOpenCode.SessionId, 100, JobStatus.Running)] : [];
+        });
+#pragma warning restore OPENCODE001 // ExperimentalClient.ListJobsAsync, ExperimentalJobListResponse and JobStatus arrangement ends here.
+        if (phase == "inbox")
+        {
+            child.ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+            {
+                _trace.Add("inbox:child");
+                if (checks == 1) { EmitReconnectCheckpoint(events.Writer); }
+                return new SessionInboxListResponse { Status = 200, Inbox = settled ? [] : [TurnEvents.QueuedWake("wake", "child")] };
+            });
+        }
+        if (phase == "active")
+        {
+            TraceActive(() =>
+            {
+                if (checks == 1) { EmitReconnectCheckpoint(events.Writer); }
+                return settled ? Active() : Active("child");
+            });
+        }
+        ArrangeReconnectIdle(phase, events.Writer);
+
+        var error = await WaitOutcomeAsync(jobs, events.Reader, CancellationToken.None);
+
+        await Assert.That(error).IsNull();
+        await Assert.That(checks).IsEqualTo(2);
+        string[] expectedReplies = phase is "callback" or "channel" ? ["phase", "lost", "checkpoint"] : ["lost", "checkpoint"];
+        await Assert.That(replyIds).IsEquivalentTo(expectedReplies, CollectionOrdering.Matching);
+        await child.Received(1).ReplyToPermissionAsync("lost", reply, OpenCodeRequestOptions.NoThrow, Arg.Any<CancellationToken>());
+        await AssertLocationSnapshotAsync();
+        await _fake.Session.DidNotReceive().ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+        await Assert.That(_trace.Where(item => item.StartsWith("jobs:", StringComparison.Ordinal)))
+            .IsEquivalentTo(["jobs:1", "jobs:2"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task WaitAsync_Should_Not_Replay_Output_Or_Clear_Declines_On_A_Reconnect()
+    {
+        _fake.AddSession("child", FakeOpenCode.SessionId);
+        var responder = Responder(new SessionPermissionReplyRequest { Decision = PermissionReply.Reject });
+        await responder.RespondAsync(TurnEvents.PendingPermission("decline", "child"), CancellationToken.None);
+#pragma warning disable OPENCODE001 // JobStatus and JobSubagent arrange the retained declined row.
+        ListJobs(_ => [TurnEvents.SubagentJob("retained", FakeOpenCode.SessionId, "child", 100, JobStatus.Running)]);
+#pragma warning restore OPENCODE001 // JobStatus and JobSubagent arrangement ends here.
+        TraceInboxes(FakeOpenCode.SessionId, "child");
+        TraceActive(() => Active());
+        ArrangeLocationSnapshot([]);
+        var events = Channel.CreateUnbounded<IEvent>();
+        events.Writer.TryWrite(TurnEvents.Connected());
+        events.Writer.TryWrite(TurnEvents.Connected());
+        events.Writer.TryWrite(TurnEvents.Text("wake output"));
+        events.Writer.TryWrite(TurnEvents.Failed("later failure", "child"));
+        events.Writer.TryComplete();
+
+        var error = await WaitOutcomeAsync(new BackgroundJobs(_fake.Client, FakeOpenCode.SessionId, 100, responder), events.Reader, CancellationToken.None);
+
+        await Assert.That(error).IsNull();
+        await Assert.That(responder.HasRejectedWithoutMessage("child")).IsTrue();
+        await AssertLocationSnapshotAsync();
+        await Assert.That(_trace).IsEquivalentTo(["get-root-location", "location-list", "jobs:1", "inbox:ses_test", "inbox:child", "active",
+            "jobs:2", "inbox:ses_test", "inbox:child", "active"], CollectionOrdering.Matching);
+        await _fake.Session.DidNotReceive().ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task WaitAsync_Should_Join_Its_Tasks_When_Reconnect_Reconciliation_Fails(bool callback, bool callerCancelled)
+    {
+        using var cancellation = new CancellationTokenSource();
+        Exception primary = callerCancelled ? new OperationCanceledException(cancellation.Token) : new OpenCodeTransportException("reconnect failed");
+        var cleanup = new OpenCodeTransportException("idle join failed");
+        var sentinel = new InvalidOperationException("reconnect was ignored");
+        var joined = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ArrangeLocationSnapshot(callback ? [TurnEvents.PendingPermission("lost")] : []);
+        if (!callback)
+        {
+            _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromException<PermissionRequestListResponse>(primary));
+        }
+#pragma warning disable OPENCODE001 // ExperimentalClient.WaitForSessionAsync and ExperimentalSessionWaitResponse arrange the independent idle-join failure.
+        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(async call =>
+        {
+            var idle = new TaskCompletionSource<ExperimentalSessionWaitResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = call.Arg<CancellationToken>().Register(() => idle.TrySetException(cleanup));
+            EmitReconnectCheckpoint();
+            try { return await idle.Task; }
+            finally { joined.TrySetResult(true); }
+        });
+#pragma warning restore OPENCODE001 // ExperimentalClient.WaitForSessionAsync and ExperimentalSessionWaitResponse arrangement ends here.
+        var responder = new PermissionResponder(_fake.Sessions, FakeOpenCode.SessionId, async (request, _) =>
+        {
+            if (callerCancelled) { await cancellation.CancelOnWorkerAsync(); }
+            throw request.Id == "lost" ? primary : sentinel;
+        });
+
+        var error = await WaitOutcomeAsync(new BackgroundJobs(_fake.Client, FakeOpenCode.SessionId, 100, responder), cancellation.Token);
+
+        var aggregate = (await Assert.That(error).IsTypeOf<AggregateException>())!; // The assertion establishes the aggregate.
+        if (callerCancelled)
+        {
+            await Assert.That(aggregate.InnerExceptions.Count).IsEqualTo(2);
+            var cancelled = (await Assert.That(aggregate.InnerExceptions[0]).IsTypeOf<OperationCanceledException>())!; // The assertion establishes cancellation.
+            await Assert.That(cancelled.CancellationToken).IsEqualTo(cancellation.Token);
+            await Assert.That(cancelled.InnerException).IsSameReferenceAs(primary);
+        }
+        else
+        {
+            await Assert.That(aggregate.InnerExceptions).IsEquivalentTo([primary, cleanup], CollectionOrdering.Matching);
+            await Assert.That(aggregate.InnerExceptions[0]).IsSameReferenceAs(primary);
+        }
+        await Assert.That(aggregate.InnerExceptions[1]).IsSameReferenceAs(cleanup);
+        await Assert.That(joined.Task.Status).IsEqualTo(TaskStatus.RanToCompletion);
+        await _fake.Session.DidNotReceive().ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>());
+    }
+
+    private void EmitReconnectCheckpoint()
+    {
+        _fake.Emit(TurnEvents.Connected());
+        _fake.Emit(TurnEvents.PermissionAsked("checkpoint"));
+        _fake.EndBus();
+    }
+
+    private static void EmitReconnectCheckpoint(ChannelWriter<IEvent> events)
+    {
+        events.TryWrite(TurnEvents.Connected());
+        events.TryWrite(TurnEvents.PermissionAsked("checkpoint"));
+        events.TryComplete();
+    }
+
+    private void ArrangeReconnectIdle(string phase, ChannelWriter<IEvent> events)
+    {
+        var calls = 0;
+#pragma warning disable OPENCODE001 // ExperimentalClient.WaitForSessionAsync and ExperimentalSessionWaitResponse arrange the idle entry and response gate.
+        _fake.Experimental.WaitForSessionAsync(Arg.Any<string>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(async call =>
+        {
+            _trace.Add("wait");
+            var idle = new TaskCompletionSource<ExperimentalSessionWaitResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var token = call.Arg<CancellationToken>();
+            using var registration = token.Register(() => idle.TrySetCanceled(token));
+            if (++calls > 1 || phase is not "idle" and not "callback") { idle.TrySetResult(new ExperimentalSessionWaitResponse { Status = 204 }); }
+            else
+            {
+                _fake.Session.ReplyToPermissionAsync("checkpoint", Arg.Any<SessionPermissionReplyRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+                    .Returns(_ => { idle.TrySetResult(new ExperimentalSessionWaitResponse { Status = 204 }); return new SessionPermissionReplyResponse { Status = 204 }; });
+                if (phase == "idle") { EmitReconnectCheckpoint(events); }
+                else { events.TryWrite(TurnEvents.PermissionAsked("phase")); }
+            }
+            return await idle.Task;
+        });
+#pragma warning restore OPENCODE001 // ExperimentalClient.WaitForSessionAsync and ExperimentalSessionWaitResponse arrangement ends here.
+    }
+
+    private void ArrangeLocationSnapshot(IReadOnlyList<PermissionRequest> requests)
+    {
+        _fake.Session.GetAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            _trace.Add("get-root-location");
+            return new SessionResponse { Status = 200, Session = FakeOpenCode.SessionInfo(FakeOpenCode.SessionId, parentId: null) };
+        });
+        _fake.Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            _trace.Add("location-list");
+            return new PermissionRequestListResponse { Status = 200, Requests = requests, Location = new LocationPublicRef { Directory = "test-directory" } };
+        });
+    }
+
+    private async Task AssertLocationSnapshotAsync()
+    {
+        await _fake.Session.Received(1).GetAsync(null, Arg.Any<CancellationToken>());
+        await _fake.Permissions.Received(1).ListRequestsAsync(Arg.Is<PermissionRequestListRequest>(request => request.Location != null && request.Location.Directory == "test-directory"), null, Arg.Any<CancellationToken>());
     }
 
     private async Task AssertMarkerReplyAsync(SessionPermissionReplyRequest reply) =>
