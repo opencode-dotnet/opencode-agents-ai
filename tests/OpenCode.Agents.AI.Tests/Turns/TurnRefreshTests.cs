@@ -134,7 +134,7 @@ public sealed class TurnRefreshTests
         var assistant = TurnEvents.StoredAssistant("msg_assistant", [new SessionMessageAssistantText { Text = "done" },
             new SessionMessageAssistantReasoning { Text = "thought" },
             TurnEvents.StoredTool("c1", "read", new SessionMessageToolStateCompleted { Input = input, Content = [new ToolTextContent { Text = "ok" }] }),
-            TurnEvents.StoredTool("c2", "shell", new SessionMessageToolStateError { Input = input, Error = new SessionStructuredError { Type = "tool_error", Message = "denied" } }),
+            TurnEvents.StoredTool("c2", "shell", new SessionMessageToolStateError { Input = input, Error = new SessionStructuredError { Type = "tool_error", Message = "denied" } }, ran: 2),
             new SessionMessageAssistantText { Text = "" }], step.Data.Tokens, SessionMessageAssistantFinish.Stop);
         _fake.Session.ListMessagesAsync(Arg.Any<SessionMessageListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
             .Returns(Page([assistant, TurnEvents.StoredUser("msg_prompt"), TurnEvents.StoredIdle("old", SessionMessageIdleOutcome.Succeeded)]));

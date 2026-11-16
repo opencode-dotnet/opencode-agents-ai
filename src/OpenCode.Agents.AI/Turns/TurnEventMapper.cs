@@ -92,7 +92,7 @@ internal sealed class TurnEventMapper(string agentId, string promptId)
                         break;
                 }
             }
-            if (assistant.Finish is not null && assistant.Tokens is { } tokens && _usage.Add(assistant.Id))
+            if (assistant.Finish is not null && assistant.Error is null && assistant.Tokens is { } tokens && _usage.Add(assistant.Id))
             {
                 updates.Add(WithRaw(Usage(tokens), assistant, assistant.Id));
             }
@@ -138,7 +138,8 @@ internal sealed class TurnEventMapper(string agentId, string promptId)
         {
             SessionMessageToolStateRunning running => running.Input,
             SessionMessageToolStateCompleted completed => completed.Input,
-            SessionMessageToolStateError error => error.Input,
+            // A tool that failed while its input streamed never ran, so no call was ever made.
+            SessionMessageToolStateError error when tool.Time.Ran is not null => error.Input,
             _ => null,
         };
         if (input is not null)
@@ -153,7 +154,7 @@ internal sealed class TurnEventMapper(string agentId, string promptId)
             _ => null,
         };
         if (result is not null && _results.Add(key)) { updates.Add(WithRaw(MapResult(messageId, tool.Id, result), tool, messageId)); }
-        if (input is null && tool.State is not SessionMessageToolStateStreaming) { updates.Add(Raw(tool.State, messageId)); }
+        if (input is null && result is null && tool.State is not SessionMessageToolStateStreaming) { updates.Add(Raw(tool.State, messageId)); }
         return updates;
     }
 

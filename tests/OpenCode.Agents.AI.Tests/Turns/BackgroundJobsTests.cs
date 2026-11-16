@@ -935,7 +935,7 @@ public sealed class BackgroundJobsTests
         TraceInboxes("child");
         ArrangeLocationSnapshot([TurnEvents.PendingPermission("lost", "child")]);
         var checks = 0;
-#pragma warning disable OPENCODE001 // ExperimentalClient.ListJobsAsync, ExperimentalJobListResponse and JobStatus arrange the event-authorized cycles.
+#pragma warning disable OPENCODE001 // JobStatus arranges the event-authorized cycles.
         ListJobs(_ =>
         {
             checks++;
@@ -944,7 +944,7 @@ public sealed class BackgroundJobsTests
             return !settled && phase is not "inbox" and not "active"
                 ? [TurnEvents.ShellJob("pending", FakeOpenCode.SessionId, 100, JobStatus.Running)] : [];
         });
-#pragma warning restore OPENCODE001 // ExperimentalClient.ListJobsAsync, ExperimentalJobListResponse and JobStatus arrangement ends here.
+#pragma warning restore OPENCODE001 // JobStatus arrangement ends here.
         if (phase == "inbox")
         {
             child.ListInboxAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>()).Returns(_ =>

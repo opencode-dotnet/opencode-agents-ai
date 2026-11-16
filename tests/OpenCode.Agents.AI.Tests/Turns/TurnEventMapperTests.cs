@@ -276,7 +276,7 @@ public sealed class TurnEventMapperTests
         {
             Input = input,
             Error = new SessionStructuredError { Type = "tool_error", Message = "denied" },
-        });
+        }, ran: 2);
         _mapper.BeginRecovery();
 
         var updates = new List<AgentResponseUpdate>(_mapper.Reconcile([TurnEvents.StoredAssistant("msg_assistant",
@@ -373,6 +373,40 @@ public sealed class TurnEventMapperTests
         await Assert.That(raw.GetType()).IsEqualTo(typeof(AIContent));
         await Assert.That(raw.RawRepresentation).IsSameReferenceAs(buffered);
         await Assert.That(_mapper.Reconcile([a1, a2])).IsEmpty();
+    }
+
+    [Test]
+    public async Task Reconcile_Should_Not_Recover_Usage_For_A_Failed_Step()
+    {
+        var step = (SessionStepEnded)TurnEvents.StepEnded(10.6, 4.4, 2.5, 3.5, 0.01);
+        var failed = TurnEvents.StoredAssistant("msg_assistant", [], step.Data.Tokens, SessionMessageAssistantFinish.Error) with
+        {
+            Error = new SessionStructuredError { Type = "provider_error", Message = "overloaded" },
+        };
+        _mapper.BeginRecovery();
+
+        await Assert.That(_mapper.Reconcile([failed])).IsEmpty(); // The live path maps usage only from an ended step.
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Reconcile_Should_Not_Recover_A_Call_For_A_Tool_That_Failed_While_Its_Input_Streamed(bool live)
+    {
+        var updates = new List<AgentResponseUpdate>();
+        updates.AddRange(_mapper.MapUpdates(TurnEvents.ToolStarted("c1", "read")));
+        if (live) { updates.AddRange(_mapper.MapUpdates(TurnEvents.ToolFailed("c1", "malformed"))); }
+        var stored = TurnEvents.StoredTool("c1", "read", new SessionMessageToolStateError
+        {
+            Input = new Dictionary<string, JsonElement>(StringComparer.Ordinal),
+            Error = new SessionStructuredError { Type = "tool_error", Message = "malformed" },
+        });
+        _mapper.BeginRecovery();
+
+        updates.AddRange(_mapper.Reconcile([TurnEvents.StoredAssistant("msg_assistant", [stored])]));
+        updates.AddRange(_mapper.CloseOpenCalls());
+
+        await Assert.That(Semantics(updates)).IsEquivalentTo(["result:c1:malformed"], CollectionOrdering.Matching);
     }
 
     [Test]

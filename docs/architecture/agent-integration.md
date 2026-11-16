@@ -171,11 +171,15 @@ observed live start streams normally. Buffered starts/deltas cannot reopen snaps
 The key is kind, assistant id and separate text/reasoning ordinal. Equal or non-prefix full values
 are silently skipped without replacing previously emitted text, as in the CLI.
 
-Completed/error stored tools recover missing calls and results independently. A Running tool
-emits its call from structured Input immediately and remains open for its live result. Streaming
-input strings are never parsed into arguments. Filtered duplicate calls/results never reopen a
-call; only actual completion or failure closes remaining calls with interrupted results. Finished
-assistant usage is recovered once with the existing rounding and token-field mapping. Unknown
+Completed/error stored tools recover missing calls and results independently. An error tool
+recovers a call only when it ran (`time.ran`): a tool that fails while its input streams is stored
+with empty input and was never called, so only its result is recovered, as the live path emits it.
+A Running tool emits its call from structured Input immediately and remains open for its live
+result. Streaming input strings are never parsed into arguments. Filtered duplicate calls/results
+never reopen a call; only actual completion or failure closes remaining calls with interrupted
+results. Usage of a finished assistant without a stored step error is recovered once with the
+existing rounding and token-field mapping; a failed step's usage is not, because the live path
+maps usage only from an ended step. Unknown
 message, content and tool-state carriers remain raw; stored parts and assistants retain their actual
 RawRepresentation. Unknown stored outcomes retain the non-failure default.
 

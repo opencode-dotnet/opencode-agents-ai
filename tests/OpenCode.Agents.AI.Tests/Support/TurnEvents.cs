@@ -105,12 +105,12 @@ internal static class TurnEvents
         Time = new SessionMessageIdleTime { Created = 1 },
     };
 
-    public static SessionMessageAssistantTool StoredTool(string id, string name, ISessionMessageToolState state) => new()
+    public static SessionMessageAssistantTool StoredTool(string id, string name, ISessionMessageToolState state, double? ran = null) => new()
     {
         Id = id,
         Name = name,
         State = state,
-        Time = new SessionMessageAssistantToolTime { Created = 1 },
+        Time = new SessionMessageAssistantToolTime { Created = 1, Ran = ran },
     };
 
     public static IEvent ToolStarted(string callId, string name) => new SessionToolInputStarted
