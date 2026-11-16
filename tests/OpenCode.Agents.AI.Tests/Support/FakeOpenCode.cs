@@ -19,6 +19,10 @@ internal sealed class FakeOpenCode
         var events = Substitute.For<EventsClient>();
         Client.Sessions.Returns(Sessions);
         Client.Events.Returns(events);
+        Server = Substitute.For<ServerClient>();
+        Client.Server.Returns(Server);
+        Server.GetInfoAsync(Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
+            .Returns(ServerInfo());
         Permissions = Substitute.For<PermissionsClient>();
         Client.Permissions.Returns(Permissions);
         Permissions.ListRequestsAsync(Arg.Any<PermissionRequestListRequest>(), Arg.Any<OpenCodeRequestOptions>(), Arg.Any<CancellationToken>())
@@ -50,6 +54,8 @@ internal sealed class FakeOpenCode
     public OpenCodeClient Client { get; }
 
     public SessionsClient Sessions { get; }
+
+    public ServerClient Server { get; }
 
     public SessionClient Session { get; }
 
@@ -159,6 +165,12 @@ internal sealed class FakeOpenCode
 
     private static string PromptId(SessionPromptRequest request) =>
         request.Id.Value ?? throw new InvalidOperationException("The prompt must provide its id.");
+
+    public static ServerInfoResponse ServerInfo(string version = "2.3.0") => new()
+    {
+        Status = 200,
+        ServerInfo = new ServerInfo { Version = version, Pid = 1, Urls = [], Paths = new ServerInfoPaths { Tmp = "test-tmp" } },
+    };
 
     internal static SessionInfo SessionInfo(string sessionId, string? parentId, string directory = "test-directory") => new()
     {

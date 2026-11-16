@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenCode.Agents.AI.Permissions;
+using OpenCode.Agents.AI.Telemetry;
 using OpenCode.Agents.AI.Turns;
 using OpenCode.Sdk;
 using OpenCode.Sdk.Models;
@@ -23,6 +25,12 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
     private readonly string _description;
     private readonly OpenCodeAgentOptions _options;
     private readonly bool _ownsClient;
+#if NET9_0_OR_GREATER // MA0158 requires the dedicated lock on runtimes that provide it.
+    private readonly Lock _serverVersionLock = new();
+#else
+    private readonly object _serverVersionLock = new();
+#endif
+    private Task<string?>? _serverVersion;
 
     /// <summary>Initializes a new instance of the <see cref="OpenCodeAgent"/> class.</summary>
     /// <param name="client">The OpenCode client used to interact with the server.</param>
@@ -86,6 +94,7 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
         IEnumerable<ChatMessage> messages, AgentSession? session,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var activity = Activity.Current;
         var texts = messages.Select(message => message.Text).ToArray();
         if (texts.All(string.IsNullOrEmpty))
         {
@@ -99,6 +108,14 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
         }
 
         var client = await GetSessionClientAsync(typedSession, cancellationToken).ConfigureAwait(false);
+        var tags = new RunTags(activity);
+        tags.Session(typedSession.SessionId!); // GetSessionClientAsync assigns the session id before returning.
+        if (activity is not null)
+        {
+            var version = await GetServerVersionAsync(cancellationToken).ConfigureAwait(false);
+            if (version is not null) { tags.ServerVersion(version); }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
         var permissions = new PermissionResponder(_client.Sessions, typedSession.SessionId!, _options.OnPermissionRequest); // GetSessionClientAsync assigns the session id before returning.
         var pump = EventPump.Start(_client.Events, cancellationToken);
         await using var pumpLifetime = pump.ConfigureAwait(false);
@@ -119,7 +136,7 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
         var cancellation = new RunCancellation(_client, typedSession.SessionId!, promptId, admission.Prompt.Time.Created); // Successful admission has assigned the session id.
         var mapper = new TurnEventMapper(Id, promptId);
         var refresh = new TurnRefresh(_client, typedSession.SessionId!, promptId, permissions, mapper); // Admission has assigned the session id.
-        var reader = new TurnReader(mapper, permissions, refresh, cancellation, promptId, Id);
+        var reader = new TurnReader(mapper, permissions, refresh, cancellation, tags, promptId, Id);
         try
         {
             await permissions.ReconcileAsync(cancellationToken).ConfigureAwait(false);
@@ -179,6 +196,27 @@ public sealed class OpenCodeAgent : AIAgent, IAsyncDisposable
         }
 
         return _client.Sessions.GetSessionClient(session.SessionId);
+    }
+
+    private Task<string?> GetServerVersionAsync(CancellationToken cancellationToken)
+    {
+        lock (_serverVersionLock)
+        {
+            return _serverVersion ??= ReadServerVersionAsync(cancellationToken);
+        }
+    }
+
+    private async Task<string?> ReadServerVersionAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await _client.Server.GetInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            return response.ServerInfo.Version;
+        }
+        catch (Exception) // slopwatch-ignore: SW003 Optional server metadata must not fail the run; a failed lookup is cached as absent.
+        {
+            return null;
+        }
     }
 
     private SessionCreateRequest CreateSessionRequest()

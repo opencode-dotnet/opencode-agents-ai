@@ -37,5 +37,8 @@
   <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
     <Using Include="System.Linq" />
   </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="System.Diagnostics.DiagnosticSource" />
+  </ItemGroup>
 
 </Project>

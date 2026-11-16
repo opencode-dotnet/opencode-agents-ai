@@ -152,20 +152,37 @@ internal static class TurnEvents
         },
     };
 
-    public static IEvent StepEnded(double input, double output, double reasoning, double cacheRead, double cost) => new SessionStepEnded
-    {
-        Id = "event_step_ended",
-        Created = 1,
-        Durable = new SessionStepEndedDurable { AggregateId = FakeOpenCode.SessionId, Seq = 4, Version = 1 },
-        Data = new SessionStepEndedData
+    public static SessionStepStarted StepStarted(string model, string provider, string assistantMessageId = "msg_assistant",
+        string sessionId = FakeOpenCode.SessionId) => new()
         {
-            SessionId = FakeOpenCode.SessionId,
-            AssistantMessageId = "msg_assistant",
-            Finish = SessionStepEndedDataFinish.Stop,
-            Cost = cost,
-            Tokens = new TokenUsageInfo { Input = input, Output = output, Reasoning = reasoning, Cache = new TokenUsageInfoCache { Read = cacheRead, Write = 0 } },
-        },
-    };
+            Id = "event_step_started",
+            Created = 1,
+            Durable = new SessionStepStartedDurable { AggregateId = sessionId, Seq = 3, Version = 1 },
+            Data = new SessionStepStartedData
+            {
+                SessionId = sessionId,
+                AssistantMessageId = assistantMessageId,
+                Model = new ModelRef { Id = model, ProviderId = provider },
+                Agent = "build",
+                Started = 1,
+            },
+        };
+
+    public static IEvent StepEnded(double input, double output, double reasoning, double cacheRead, double cost,
+        string assistantMessageId = "msg_assistant", string sessionId = FakeOpenCode.SessionId) => new SessionStepEnded
+        {
+            Id = "event_step_ended",
+            Created = 1,
+            Durable = new SessionStepEndedDurable { AggregateId = sessionId, Seq = 4, Version = 1 },
+            Data = new SessionStepEndedData
+            {
+                SessionId = sessionId,
+                AssistantMessageId = assistantMessageId,
+                Finish = SessionStepEndedDataFinish.Stop,
+                Cost = cost,
+                Tokens = new TokenUsageInfo { Input = input, Output = output, Reasoning = reasoning, Cache = new TokenUsageInfoCache { Read = cacheRead, Write = 0 } },
+            },
+        };
 
     public static IEvent Succeeded(string sessionId = FakeOpenCode.SessionId) => new SessionExecutionSucceeded
     {

@@ -4,12 +4,13 @@ using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenCode.Agents.AI.Permissions;
+using OpenCode.Agents.AI.Telemetry;
 using OpenCode.Sdk.Models;
 
 namespace OpenCode.Agents.AI.Turns;
 
 internal sealed class TurnReader(TurnEventMapper mapper, PermissionResponder permissions, TurnRefresh refresh,
-    RunCancellation cancellation, string promptId, string agentId)
+    RunCancellation cancellation, RunTags tags, string promptId, string agentId)
 {
     private bool _delivered;
     private bool _recovering;
@@ -32,7 +33,18 @@ internal sealed class TurnReader(TurnEventMapper mapper, PermissionResponder per
                 _failure = ExceptionDispatchInfo.Capture(error);
                 break;
             }
-            foreach (var update in updates) { yield return update; }
+            foreach (var update in updates)
+            {
+                foreach (var usage in update.Contents.OfType<UsageContent>())
+                {
+                    switch (usage.RawRepresentation)
+                    {
+                        case SessionStepEnded ended: tags.Cost(ended.Data.Cost); break;
+                        case SessionMessageAssistant { Cost: { } cost }: tags.Cost(cost); break;
+                    }
+                }
+                yield return update;
+            }
         }
         foreach (var closingResult in mapper.CloseOpenCalls()) { yield return closingResult; }
         _failure?.Throw();
@@ -65,6 +77,7 @@ internal sealed class TurnReader(TurnEventMapper mapper, PermissionResponder per
             cancellation.MarkDelivered();
         }
         if (!_delivered) { return []; }
+        if (current is SessionStepStarted stepStarted) { tags.Step(stepStarted.Data.Model); }
 
         var terminal = eventSessionId == sessionId && TurnOutcome.EndsTurn(current);
         var liveFailure = terminal ? TurnOutcome.Failure(current) : null;
